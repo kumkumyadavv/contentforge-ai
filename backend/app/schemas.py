@@ -63,6 +63,7 @@ class GenerateResponse(BaseModel):
     outputs: dict[str, Any]
     validation: dict[str, ValidationResult]
     source_metadata: dict[str, Any] = Field(default_factory=dict)
+    generation_mode: str = "fallback"
 
 
 class HealthResponse(BaseModel):
