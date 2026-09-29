@@ -1,0 +1,102 @@
+# =========================
+
+# Environment / Secrets
+
+# =========================
+
+.env
+.env.*
+!.env.example
+
+# =========================
+
+# Python
+
+# =========================
+
+**pycache**/
+*.py[cod]
+*.pyo
+*.pyd
+
+.venv/
+venv/
+ENV/
+env/
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+# =========================
+
+# FastAPI / Local Database
+
+# =========================
+
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+
+# Node / React
+
+# =========================
+
+node_modules/
+dist/
+build/
+.vite/
+
+# =========================
+
+# Logs
+
+# =========================
+
+*.log
+logs/
+
+# =========================
+
+# OS Files
+
+# =========================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+
+# IDE / Editor
+
+# =========================
+
+.vscode/
+.idea/
+
+# =========================
+
+# Temporary files
+
+# =========================
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.cache
+
+# =========================
+
+# Uploaded / Generated files
+
+# =========================
+
+uploads/
+generated/
+temp/
+tmp/
