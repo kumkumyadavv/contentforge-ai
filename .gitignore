@@ -1,102 +1,48 @@
-# =========================
-
-# Environment / Secrets
-
-# =========================
-
+ # Environment variables / secrets
 .env
 .env.*
 !.env.example
 
-# =========================
-
 # Python
-
-# =========================
-
-**pycache**/
+__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 
+# Virtual environments
 .venv/
 venv/
-ENV/
 env/
+ENV/
 
+# Pytest / coverage
 .pytest_cache/
 .coverage
 htmlcov/
 
-# =========================
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
 
-# FastAPI / Local Database
+# Frontend build
+dist/
+.vite/
 
-# =========================
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
 
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite database
 *.db
 *.sqlite
 *.sqlite3
 
-# =========================
-
-# Node / React
-
-# =========================
-
-node_modules/
-dist/
-build/
-.vite/
-
-# =========================
-
 # Logs
-
-# =========================
-
 *.log
-logs/
-
-# =========================
-
-# OS Files
-
-# =========================
-
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# =========================
-
-# IDE / Editor
-
-# =========================
-
-.vscode/
-.idea/
-
-# =========================
-
-# Temporary files
-
-# =========================
-
-*.tmp
-*.temp
-*.swp
-*.swo
-*.bak
-*.cache
-
-# =========================
-
-# Uploaded / Generated files
-
-# =========================
-
-uploads/
-generated/
-temp/
-tmp/
