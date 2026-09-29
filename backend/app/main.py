@@ -75,7 +75,7 @@ async def generate_content(request: GenerateRequest) -> GenerateResponse:
 
     config_data = request.config.model_dump()
     selected_outputs = config_data.get("output_types") or ["executive_summary", "advisory", "linkedin"]
-    brief = build_content_brief(source_text, config_data)
+    brief, generation_mode = build_content_brief(source_text, config_data, return_mode=True)
     generated_outputs = generate_output_variants(brief, config_data)
     outputs = {key: generated_outputs[key] for key in selected_outputs if key in generated_outputs}
 
@@ -85,9 +85,16 @@ async def generate_content(request: GenerateRequest) -> GenerateResponse:
 
     app.state.current_brief = brief
     app.state.outputs = outputs
+    app.state.generation_mode = generation_mode
 
     metadata = app.state.current_source.get("metadata", {}) if app.state.current_source else {}
-    return GenerateResponse(brief=brief, outputs=outputs, validation=validation, source_metadata=metadata)
+    return GenerateResponse(
+        brief=brief,
+        outputs=outputs,
+        validation=validation,
+        source_metadata=metadata,
+        generation_mode=generation_mode,
+    )
 
 
 @app.post("/api/output/regenerate")
