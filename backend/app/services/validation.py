@@ -16,6 +16,45 @@ def _required_fields_by_output(output_name: str) -> list[str]:
     return []
 
 
+def _extract_value_units(text: str) -> list[tuple[str, str]]:
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*(hours?|days?|weeks?|months?|years?|percent|%|people|customers|employees|sites|records|transactions|locations)", text.lower())
+    return [(number, unit) for number, unit in matches]
+
+
+def _check_unconfirmed_claims(payload: dict, brief: dict, errors: list[str], warnings: list[str]) -> None:
+    output_text = json.dumps(payload, ensure_ascii=False).lower()
+    source_uncertainty = " ".join(brief.get("uncertainties", []) + brief.get("risks", [])).lower()
+    if any(phrase in source_uncertainty for phrase in ["not confirmed", "not yet confirmed", "unknown", "unconfirmed", "cannot confirm"]):
+        negative_claim_patterns = [
+            "was stolen",
+            "was compromised",
+            "occurred",
+            "happened",
+            "caused",
+            "confirmed",
+            "exfiltration",
+            "breach",
+        ]
+        if any(pattern in output_text for pattern in negative_claim_patterns):
+            errors.append("The output appears to turn an unconfirmed issue into a confirmed fact.")
+
+
+def _check_duration_consistency(payload: dict, brief: dict, errors: list[str], warnings: list[str]) -> None:
+    source_values = []
+    for item in brief.get("key_facts", []) + brief.get("summary", "").split("."):
+        source_values.extend(_extract_value_units(item))
+
+    output_values = _extract_value_units(json.dumps(payload, ensure_ascii=False))
+    if not source_values or not output_values:
+        return
+
+    for source_number, source_unit in source_values:
+        for output_number, output_unit in output_values:
+            if source_unit != output_unit and source_number == output_number:
+                errors.append(f"Detected a likely value mismatch: {source_number} {source_unit} was described in the source, but the output suggests {output_number} {output_unit}.")
+                return
+
+
 def validate_output(output_name: str, payload: dict, brief: dict) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
@@ -55,9 +94,12 @@ def validate_output(output_name: str, payload: dict, brief: dict) -> ValidationR
             warnings.append("The output may not be preserving the most important source facts.")
         deterministic_checks.append("Key fact preservation check performed.")
 
+    _check_unconfirmed_claims(payload, brief, errors, warnings)
+    _check_duration_consistency(payload, brief, errors, warnings)
+
     if not brief.get("uncertainties"):
         ai_assisted_checks.append("No explicit uncertainty language was found in the brief; no AI uncertainty validation was possible.")
-    
+
     if output_name == "linkedin":
         if not payload.get("hashtags"):
             warnings.append("LinkedIn hashtags are missing.")
