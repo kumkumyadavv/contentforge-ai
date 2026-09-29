@@ -1,8 +1,13 @@
+import json
+from io import BytesIO
+
 import pytest
 from fastapi.testclient import TestClient
+from pptx import Presentation
 
 from app.main import app
 from app.services import brief as brief_module
+from app.services.presentation import build_presentation
 from app.services.validation import validate_output
 
 client = TestClient(app)
@@ -46,7 +51,7 @@ def test_generate_returns_brief_and_outputs():
     assert payload['generation_mode'] in {'llm', 'fallback'}
 
 
-@pytest.mark.parametrize('output_type', ['executive_summary', 'advisory', 'linkedin'])
+@pytest.mark.parametrize('output_type', ['executive_summary', 'advisory', 'linkedin', 'x_post', 'infographic', 'presentation'])
 def test_regenerate_uses_request_brief_and_validates_selected_output(output_type):
     app.state.current_brief = None
     brief = {
@@ -72,7 +77,7 @@ def test_regenerate_uses_request_brief_and_validates_selected_output(output_type
     assert set(payload) == {'output_type', 'output', 'validation'}
     assert payload['output_type'] == output_type
     assert payload['validation']['status'] in {'passed', 'warning', 'failed'}
-    if output_type == 'linkedin':
+    if output_type in {'linkedin', 'x_post'}:
         assert 'Request supplied incident brief' in payload['output']['hook']
     else:
         assert 'Request supplied incident brief' in payload['output']['title']
@@ -105,6 +110,96 @@ def test_regenerate_rejects_unsupported_output_type():
 
     assert response.status_code == 400
     assert response.json()['detail'] == 'Unsupported output type for regeneration.'
+
+
+def test_new_outputs_include_brief_facts_dates_and_valid_x_character_count(monkeypatch):
+    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'GEMINI_API_KEY': '', 'GEMINI_MODEL': 'test-model'})(), raising=False)
+    response = client.post(
+        '/api/generate',
+        json={
+            'source_text': 'Acme Ltd reported an 18% increase on 2026-05-10. The team will review the impact and continue its investigation.',
+            'config': {'output_types': ['x_post', 'infographic', 'presentation']},
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert set(data['outputs']) == {'x_post', 'infographic', 'presentation'}
+    x_post = data['outputs']['x_post']
+    composed_post = '\n\n'.join([x_post['hook'], x_post['post'], x_post['call_to_action'], ' '.join(x_post['hashtags'])]).strip()
+    assert x_post['character_count'] == len(composed_post)
+    assert '18%' in json.dumps(data['outputs'])
+    assert '2026-05-10' in json.dumps(data['outputs'])
+    assert data['validation']['infographic']['status'] != 'failed'
+    assert len(data['outputs']['presentation']['slides']) == 8
+
+
+def test_uncertainty_validator_accepts_caveat_and_rejects_definitive_negative_claim():
+    brief = {
+        'summary': 'The investigation is ongoing.',
+        'key_facts': [],
+        'dates': [],
+        'entities': [],
+        'risks': ['No confirmed evidence that customer data was exfiltrated.'],
+        'uncertainties': ['The investigation is ongoing.'],
+    }
+    valid = {
+        'hook': 'Investigation update',
+        'post': 'There was no confirmed evidence of customer data exfiltration, and the investigation remains ongoing.',
+        'call_to_action': 'Follow for verified updates.',
+        'hashtags': ['#Security'],
+    }
+    valid['character_count'] = len('\n\n'.join([valid['hook'], valid['post'], valid['call_to_action'], ' '.join(valid['hashtags'])]).strip())
+    invalid = {**valid, 'post': 'Customer data was not exfiltrated.'}
+    invalid['character_count'] = len('\n\n'.join([invalid['hook'], invalid['post'], invalid['call_to_action'], ' '.join(invalid['hashtags'])]).strip())
+
+    assert validate_output('x_post', valid, brief).status != 'failed'
+    failed = validate_output('x_post', invalid, brief)
+    assert failed.status == 'failed'
+    assert any('unconfirmed issue' in error.lower() for error in failed.errors)
+
+
+def test_fallback_brief_preserves_no_confirmed_evidence_uncertainty(monkeypatch):
+    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'GEMINI_API_KEY': '', 'GEMINI_MODEL': 'test-model'})(), raising=False)
+    source = 'There was no confirmed evidence that customer data was exfiltrated. The investigation is ongoing.'
+    brief = brief_module.build_content_brief(source, {})
+    outputs = brief_module.generate_output_variants(brief, {}, ['x_post'])
+
+    assert any('no confirmed evidence' in item.lower() for item in brief['uncertainties'])
+    assert 'ongoing' in outputs['x_post']['post'].lower()
+    assert validate_output('x_post', outputs['x_post'], brief).status != 'failed'
+
+
+def test_presentation_download_is_a_valid_pptx():
+    output = {
+        'title': 'Quarterly update',
+        'subtitle': '18% increase in Q1 2026',
+        'slides': [
+            {'slide_number': index + 1, 'title': f'Slide {index + 1}', 'content': ['18% increase in Q1 2026'], 'speaker_notes': ''}
+            for index in range(6)
+        ],
+    }
+    content = build_presentation(output)
+    presentation = Presentation(BytesIO(content))
+    assert len(presentation.slides) == 6
+    assert '18% increase in Q1 2026' in '\n'.join(shape.text for slide in presentation.slides for shape in slide.shapes if shape.has_text_frame)
+
+
+def test_presentation_download_endpoint_streams_pptx():
+    response = client.post(
+        '/api/output/presentation/download',
+        json={
+            'output': {
+                'title': 'Download test',
+                'subtitle': 'Source grounded',
+                'slides': [{'slide_number': index + 1, 'title': f'Slide {index + 1}', 'content': ['Verified source fact']} for index in range(6)],
+            },
+            'brief': {'summary': 'Verified source fact'},
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith('application/vnd.openxmlformats-officedocument.presentationml.presentation')
+    assert len(Presentation(BytesIO(response.content)).slides) == 6
 
 
 def test_brief_schema_has_expected_fields():

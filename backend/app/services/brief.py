@@ -63,7 +63,7 @@ def _fallback_brief(source_text: str, config: dict[str, Any]) -> dict[str, Any]:
         "impact": [sentence for sentence in sentences if "impact" in sentence.lower()][:3] or ["The source text describes the situation and its operational or strategic consequences."],
         "risks": [sentence for sentence in sentences if any(word in sentence.lower() for word in ["risk", "warning", "threat", "issue", "concern"])][:3] or ["No explicit risks were identified in the source text."],
         "recommended_actions": [sentence for sentence in sentences if any(word in sentence.lower() for word in ["recommend", "should", "must", "need to", "action", "plan"])][:3] or ["Review the source details and confirm the next practical steps with stakeholders."],
-        "uncertainties": [sentence for sentence in sentences if any(word in sentence.lower() for word in ["uncertain", "unknown", "may", "might", "possibly", "estimate", "assumption"])][:3] or ["No material uncertainties were explicitly stated in the source text."],
+        "uncertainties": [sentence for sentence in sentences if any(word in sentence.lower() for word in ["uncertain", "unknown", "may", "might", "possibly", "estimate", "assumption", "no confirmed evidence", "not confirmed", "unconfirmed", "investigation is ongoing", "investigation remains ongoing"])][:3] or ["No material uncertainties were explicitly stated in the source text."],
         "evidence_references": sentences[:3] if sentences else [cleaned[:250]],
     }
     if not fallback["main_topic"]:
@@ -195,9 +195,148 @@ def _make_linkedin_output(brief: dict[str, Any], config: dict[str, Any]) -> dict
     }
 
 
-def generate_output_variants(brief: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "executive_summary": _make_summary_output(brief, config),
-        "advisory": _make_advisory_output(brief, config),
-        "linkedin": _make_linkedin_output(brief, config),
+def _make_x_post_output(brief: dict[str, Any]) -> dict[str, Any]:
+    summary = brief.get("summary") or ""
+    uncertainties = brief.get("uncertainties", [])[:2]
+    facts = [fact for fact in brief.get("key_facts", []) if fact != summary]
+    post_items = list(dict.fromkeys(item for item in [summary, *uncertainties] if item))
+    action = next(iter(brief.get("recommended_actions", [])), "")
+    if action and len(" ".join([*post_items, action])) <= 215:
+        post_items.append(action)
+    post_text = " ".join(post_items).strip()
+    topic = (brief.get("entities") or [brief.get("main_topic", "")])[0]
+    topic_words = re.findall(r"[A-Za-z0-9]+", topic)
+    hashtags = [f"#{word}" for word in topic_words[:2]] or ["#Updates"]
+    payload = {
+        "hook": f"{topic_words[0]} update" if topic_words else "Key update",
+        "post": post_text,
+        "call_to_action": "More verified updates to follow.",
+        "hashtags": hashtags,
     }
+    payload["character_count"] = len(_x_post_text(payload))
+    return payload
+
+
+def _x_post_text(payload: dict[str, Any]) -> str:
+    return "\n\n".join([
+        str(payload.get("hook", "")),
+        str(payload.get("post", "")),
+        str(payload.get("call_to_action", "")),
+        " ".join(str(tag) for tag in payload.get("hashtags", [])),
+    ]).strip()
+
+
+def _make_infographic_output(brief: dict[str, Any]) -> dict[str, Any]:
+    facts = brief.get("key_facts", [])
+    dates = brief.get("dates", [])
+    entities = brief.get("entities", [])
+    numeric_fact = next((fact for fact in facts if re.search(r"\d", fact)), None)
+    sections = []
+    for heading, values in [
+        ("Key findings", facts),
+        ("Impact", brief.get("impact", [])),
+        ("Risks and uncertainty", brief.get("risks", []) + brief.get("uncertainties", [])),
+        ("Timeline and entities", dates + entities),
+    ]:
+        value = values[0] if values else "Not specified in the Content Brief."
+        description = " | ".join(str(item) for item in values[1:3]) or "No additional detail in the Content Brief."
+        sections.append({"heading": heading, "value": str(value), "description": description})
+    return {
+        "title": brief.get("main_topic") or "Content Brief",
+        "subtitle": brief.get("summary") or "Evidence-grounded overview",
+        "key_stat": numeric_fact or (dates[0] if dates else "Key findings"),
+        "sections": sections,
+        "key_message": brief.get("summary") or "Review the evidence and its stated limits.",
+        "recommended_actions": brief.get("recommended_actions", [])[:4],
+        "footer": "Based on the supplied Content Brief. Unconfirmed details remain unconfirmed.",
+    }
+
+
+def _make_presentation_output(brief: dict[str, Any]) -> dict[str, Any]:
+    facts = brief.get("key_facts", [])
+    dates = brief.get("dates", [])
+    slide_content = [
+        [brief.get("summary") or "Overview based on the Content Brief."],
+        facts[:3] or [brief.get("summary", "")],
+        brief.get("impact", [])[:3] or ["Impact is not specified in the Content Brief."],
+        brief.get("risks", [])[:3] or ["No explicit risks were identified in the Content Brief."],
+        brief.get("recommended_actions", [])[:4] or ["Confirm next steps with responsible stakeholders."],
+        (dates + brief.get("entities", []))[:4] or facts[:3] or ["No dates or entities were specified."],
+        (brief.get("uncertainties", []) + brief.get("risks", []))[:3] or ["No material uncertainty was explicitly stated."],
+        brief.get("recommended_actions", [])[:3] or [brief.get("summary", "Review the key findings.")],
+    ]
+    titles = [
+        "Situation and context", "Key findings", "Impact", "Risks and concerns",
+        "Recommended actions", "Important facts and timeline", "Uncertainty and open questions",
+        "Conclusion and next steps",
+    ]
+    slides = [
+        {
+            "slide_number": index + 1,
+            "title": titles[index],
+            "content": [str(item) for item in content if item][:4],
+            "speaker_notes": "Grounded only in the supplied Content Brief.",
+        }
+        for index, content in enumerate(slide_content)
+    ]
+    return {"title": brief.get("main_topic") or "Content Brief", "subtitle": brief.get("summary") or "Evidence-grounded presentation", "slides": slides}
+
+
+def _generate_new_output_variants(
+    brief: dict[str, Any],
+    config: dict[str, Any],
+    requested_output_types: set[str] | None = None,
+) -> dict[str, Any]:
+    all_fallbacks = {
+        "x_post": _make_x_post_output(brief),
+        "infographic": _make_infographic_output(brief),
+        "presentation": _make_presentation_output(brief),
+    }
+    fallback = {
+        key: value for key, value in all_fallbacks.items()
+        if requested_output_types is None or key in requested_output_types
+    }
+    if not fallback:
+        return {}
+    system_prompt = (
+        "Create structured x_post, infographic, and presentation content using ONLY the supplied Content Brief. "
+        "Preserve all material dates, numbers, entities, and the exact uncertainty level. Never invent or overstate facts. "
+        "Keep social copy concise, infographic sections factual, and the presentation to eight concise slides. "
+        "Return JSON matching the provided schema."
+    )
+    user_prompt = json.dumps({"brief": brief, "config": config, "schema": fallback}, ensure_ascii=False)
+    generated, _ = generate_structured_json_with_mode(system_prompt, user_prompt, fallback)
+    if not isinstance(generated, dict):
+        generated = fallback
+
+    outputs: dict[str, Any] = {}
+    for output_type, defaults in fallback.items():
+        candidate = generated.get(output_type)
+        value = dict(defaults)
+        if isinstance(candidate, dict):
+            for key in defaults:
+                if isinstance(candidate.get(key), type(defaults[key])):
+                    value[key] = candidate[key]
+        if output_type == "x_post":
+            value["character_count"] = len(_x_post_text(value))
+        outputs[output_type] = value
+    return outputs
+
+
+def generate_output_variants(
+    brief: dict[str, Any],
+    config: dict[str, Any],
+    output_types: list[str] | None = None,
+) -> dict[str, Any]:
+    requested = set(output_types) if output_types is not None else None
+    generators = {
+        "executive_summary": lambda: _make_summary_output(brief, config),
+        "advisory": lambda: _make_advisory_output(brief, config),
+        "linkedin": lambda: _make_linkedin_output(brief, config),
+    }
+    outputs = {
+        name: generator() for name, generator in generators.items()
+        if requested is None or name in requested
+    }
+    outputs.update(_generate_new_output_variants(brief, config, requested))
+    return outputs

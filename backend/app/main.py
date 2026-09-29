@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from io import BytesIO
+import re
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.schemas import (
@@ -12,12 +15,14 @@ from app.schemas import (
     GenerateRequest,
     GenerateResponse,
     HealthResponse,
+    PresentationExportRequest,
     RegenerateRequest,
     SourceExtraction,
     ValidationResult,
 )
 from app.services.brief import build_content_brief, generate_output_variants
 from app.services.ingestion import extract_pdf_text, validate_source_text
+from app.services.presentation import build_presentation
 from app.services.validation import validate_output
 
 app = FastAPI(title="ContentForge AI", version="0.1.0")
@@ -76,7 +81,7 @@ async def generate_content(request: GenerateRequest) -> GenerateResponse:
     config_data = request.config.model_dump()
     selected_outputs = config_data.get("output_types") or ["executive_summary", "advisory", "linkedin"]
     brief, generation_mode = build_content_brief(source_text, config_data, return_mode=True)
-    generated_outputs = generate_output_variants(brief, config_data)
+    generated_outputs = generate_output_variants(brief, config_data, selected_outputs)
     outputs = {key: generated_outputs[key] for key in selected_outputs if key in generated_outputs}
 
     validation: dict[str, ValidationResult] = {}
@@ -101,7 +106,7 @@ async def generate_content(request: GenerateRequest) -> GenerateResponse:
 async def regenerate_output(request: RegenerateRequest) -> dict[str, Any]:
     output_type = request.output_type.lower()
 
-    if output_type not in {"executive_summary", "advisory", "linkedin"}:
+    if output_type not in {"executive_summary", "advisory", "linkedin", "x_post", "infographic", "presentation"}:
         raise HTTPException(
             status_code=400,
             detail="Unsupported output type for regeneration."
@@ -109,10 +114,7 @@ async def regenerate_output(request: RegenerateRequest) -> dict[str, Any]:
 
     brief = request.brief
 
-    outputs = generate_output_variants(
-        brief,
-        request.config.model_dump()
-    )
+    outputs = generate_output_variants(brief, request.config.model_dump(), [output_type])
 
     regenerated = outputs.get(output_type)
 
@@ -135,6 +137,20 @@ async def regenerate_output(request: RegenerateRequest) -> dict[str, Any]:
         "output": regenerated,
         "validation": validation
     }
+
+
+@app.post("/api/output/presentation/download")
+async def download_presentation(request: PresentationExportRequest) -> StreamingResponse:
+    validation = validate_output("presentation", request.output, request.brief)
+    if validation.errors:
+        raise HTTPException(status_code=400, detail="Presentation content is invalid.")
+    content = build_presentation(request.output, request.brief)
+    filename = re.sub(r"[^A-Za-z0-9_-]+", "-", str(request.output.get("title") or "contentforge"))[:60].strip("-") or "contentforge"
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.pptx"'},
+    )
 
 @app.get("/api/status")
 def get_status() -> dict[str, Any]:

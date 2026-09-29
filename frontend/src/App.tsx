@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import './App.css'
 
-type OutputKey = 'executive_summary' | 'advisory' | 'linkedin'
+type OutputKey = 'executive_summary' | 'advisory' | 'linkedin' | 'x_post' | 'infographic' | 'presentation'
 type ResultTab = 'source' | 'brief' | OutputKey
 type ProcessingOperation = 'source' | 'generation' | 'regeneration'
 type CopyFeedback = { outputType: OutputKey; status: 'copied' | 'failed' } | null
+type OutputRecord = Record<string, unknown>
 
 type AppConfig = {
   audience: string
@@ -30,11 +31,19 @@ const defaultConfig: AppConfig = {
   language: 'English',
   detail_level: 'moderate',
   communication_objective: 'inform and guide action',
-  output_types: ['executive_summary', 'advisory', 'linkedin'],
+  output_types: ['executive_summary', 'advisory', 'linkedin', 'x_post', 'infographic', 'presentation'],
 }
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const processingSteps = ['Extracting source', 'Building Content Brief', 'Generating outputs', 'Validating']
+const outputLabels: Record<OutputKey, string> = {
+  executive_summary: 'Executive Summary',
+  advisory: 'Advisory',
+  linkedin: 'LinkedIn',
+  x_post: 'X Post',
+  infographic: 'Infographic',
+  presentation: 'PowerPoint',
+}
 const outputFieldLabels: Record<string, string> = {
   title: 'Title',
   one_line_summary: 'One-line summary',
@@ -58,6 +67,12 @@ const outputFieldLabels: Record<string, string> = {
   hashtags: 'Hashtags',
   alternative_hooks: 'Alternative hooks',
   character_count: 'Character count',
+  subtitle: 'Subtitle',
+  key_stat: 'Key statistic',
+  sections: 'Sections (JSON)',
+  key_message: 'Key message',
+  footer: 'Footer',
+  slides: 'Slides',
   main_topic: 'Main topic',
   key_facts: 'Key facts',
   dates: 'Dates',
@@ -69,6 +84,31 @@ const outputFieldConfig: Record<OutputKey, string[]> = {
   executive_summary: ['title', 'one_line_summary', 'situation', 'key_findings', 'impact', 'risks', 'recommended_actions', 'uncertainties', 'source_references'],
   advisory: ['title', 'severity', 'date', 'summary', 'affected_entities', 'situation', 'impact', 'recommended_actions', 'mitigation', 'references', 'disclaimer'],
   linkedin: ['hook', 'post', 'call_to_action', 'hashtags', 'alternative_hooks', 'character_count'],
+  x_post: ['hook', 'post', 'call_to_action', 'hashtags', 'character_count'],
+  infographic: ['title', 'subtitle', 'key_stat', 'sections', 'key_message', 'recommended_actions', 'footer'],
+  presentation: [],
+}
+
+const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+})[character] || character)
+
+const downloadBlob = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+const buildInfographicHtml = (output: OutputRecord) => {
+  const sections = (Array.isArray(output.sections) ? output.sections : []).map((section: Record<string, unknown>) => `
+    <article><h2>${escapeHtml(section.heading)}</h2><strong>${escapeHtml(section.value)}</strong><p>${escapeHtml(section.description)}</p></article>`).join('')
+  const actions = (Array.isArray(output.recommended_actions) ? output.recommended_actions : []).map((action: unknown) => `<li>${escapeHtml(action)}</li>`).join('')
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(output.title)}</title><style>
+    *{box-sizing:border-box}body{margin:0;background:#edf2ee;color:#172c2a;font:16px/1.55 Georgia,serif}.sheet{max-width:1000px;margin:32px auto;padding:48px;background:#fff;border-top:9px solid #196358}.kicker{font:700 12px Arial,sans-serif;letter-spacing:2px;color:#196358}h1{font-size:40px;line-height:1.1;margin:8px 0}header>p{color:#536560;font-size:18px}.stat{margin:28px 0;background:#e8f1ed;padding:24px;border-left:5px solid #196358}.stat strong{font:700 34px Arial,sans-serif;color:#196358}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.grid article{border:1px solid #d8e1dc;padding:18px}.grid h2{font:700 17px Arial,sans-serif;margin:0 0 10px}.grid strong{font-size:20px}.grid p,footer{color:#536560}h3{margin-top:30px}@media(max-width:640px){.sheet{margin:0;padding:24px}.grid{grid-template-columns:1fr}h1{font-size:32px}}@media print{body{background:#fff}.sheet{margin:0;max-width:none}}
+    </style><main class="sheet"><header><span class="kicker">CONTENTFORGE · EVIDENCE BRIEF</span><h1>${escapeHtml(output.title)}</h1><p>${escapeHtml(output.subtitle)}</p></header><section class="stat"><span class="kicker">KEY STAT / FINDING</span><br><strong>${escapeHtml(output.key_stat)}</strong></section><section class="grid">${sections}</section><h3>${escapeHtml(output.key_message)}</h3><ul>${actions}</ul><footer>${escapeHtml(output.footer)}</footer></main></html>`
 }
 
 const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {}))
@@ -83,14 +123,15 @@ function App() {
   const [failedOperation, setFailedOperation] = useState<ProcessingOperation | null>(null)
   const [activeTab, setActiveTab] = useState<ResultTab>('source')
   const [sourceMeta, setSourceMeta] = useState<Record<string, unknown>>({})
-  const [brief, setBrief] = useState<Record<string, any> | null>(null)
-  const [outputs, setOutputs] = useState<Record<string, any>>({})
+  const [brief, setBrief] = useState<OutputRecord | null>(null)
+  const [outputs, setOutputs] = useState<Record<string, OutputRecord>>({})
   const [validation, setValidation] = useState<Record<string, ValidationState>>({})
-  const [editing, setEditing] = useState<Record<string, Record<string, any>>>({})
+  const [editing, setEditing] = useState<Record<string, OutputRecord>>({})
   const [generationMode, setGenerationMode] = useState('fallback')
   const [error, setError] = useState('')
   const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>(null)
   const [regeneratingOutput, setRegeneratingOutput] = useState<OutputKey | null>(null)
+  const [isDownloadingPresentation, setIsDownloadingPresentation] = useState(false)
 
   const selectedOutputs = useMemo(
     () => new Set(config.output_types),
@@ -325,7 +366,7 @@ function App() {
 }
  
  
-  const copyOutput = async (outputType: OutputKey, payload: Record<string, any>) => {
+  const copyOutput = async (outputType: OutputKey, payload: OutputRecord) => {
     try {
       await navigator.clipboard.writeText(flattenOutput(payload))
       setCopyFeedback({ outputType, status: 'copied' })
@@ -337,12 +378,40 @@ function App() {
     }, 1800)
   }
 
-  const flattenOutput = (payload: Record<string, any>) => {
+  const downloadInfographic = (payload: OutputRecord) => {
+    const filename = String(payload.title || 'contentforge-infographic').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    downloadBlob(new Blob([buildInfographicHtml(payload)], { type: 'text/html;charset=utf-8' }), `${filename || 'contentforge-infographic'}.html`)
+  }
+
+  const downloadPresentation = async (payload: OutputRecord) => {
+    if (!brief) return
+    setError('')
+    setIsDownloadingPresentation(true)
+    try {
+      const response = await fetch(`${API_URL}/api/output/presentation/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ output: payload, brief }),
+      })
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}))
+        throw new Error(result.detail || 'PowerPoint download failed.')
+      }
+      const filename = String(payload.title || 'contentforge-presentation').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      downloadBlob(await response.blob(), `${filename || 'contentforge-presentation'}.pptx`)
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : 'PowerPoint download failed.')
+    } finally {
+      setIsDownloadingPresentation(false)
+    }
+  }
+
+  const flattenOutput = (payload: OutputRecord) => {
     const relevantFields = Object.entries(payload)
       .filter(([key]) => key !== 'character_count')
       .map(([key, value]) => {
         if (Array.isArray(value)) {
-          return `${outputFieldLabels[key] || key}: ${value.join(' • ')}`
+          return `${outputFieldLabels[key] || key}: ${value.map((item) => typeof item === 'object' ? JSON.stringify(item) : String(item)).join(' • ')}`
         }
         if (typeof value === 'object' && value !== null) {
           return `${outputFieldLabels[key] || key}: ${JSON.stringify(value)}`
@@ -351,7 +420,7 @@ function App() {
       })
       .join('\n')
 
-    return `${relevantFields}${payload.character_count ? `\nCharacter count: ${payload.character_count}` : ''}`
+    return `${relevantFields}${payload.character_count ? `\nCharacter count: ${String(payload.character_count)}` : ''}`
   }
 
   const startEditingOutput = (outputType: OutputKey) => {
@@ -387,7 +456,14 @@ function App() {
 
     for (const field of outputFieldConfig[outputType] ?? []) {
       const editedFieldValue = edited[field]
-      if (Array.isArray(base[field])) {
+      if (outputType === 'infographic' && field === 'sections' && typeof editedFieldValue === 'string') {
+        try {
+          nextValue[field] = JSON.parse(editedFieldValue)
+        } catch {
+          setError('Sections must be valid JSON before saving.')
+          return
+        }
+      } else if (Array.isArray(base[field])) {
         nextValue[field] = typeof editedFieldValue === 'string'
           ? editedFieldValue
               .split(/\n|•/)
@@ -401,6 +477,11 @@ function App() {
       }
     }
 
+    if (outputType === 'x_post') {
+      const hashtags = Array.isArray(nextValue.hashtags) ? nextValue.hashtags.map(String).join(' ') : ''
+      nextValue.character_count = [nextValue.hook, nextValue.post, nextValue.call_to_action, hashtags].map(String).join('\n\n').trim().length
+    }
+
     setOutputs((current) => ({ ...current, [outputType]: nextValue }))
     cancelEditingOutput(outputType)
   }
@@ -408,7 +489,7 @@ function App() {
   const renderArrayField = (name: string, values: unknown[]) => (
     <div className="data-row" key={name}>
       <dt>{outputFieldLabels[name] || name}</dt>
-      <dd>{Array.isArray(values) ? values.join(' • ') : String(values)}</dd>
+      <dd>{Array.isArray(values) ? values.map((item) => typeof item === 'object' ? JSON.stringify(item) : String(item)).join(' • ') : String(values)}</dd>
     </div>
   )
 
@@ -467,14 +548,14 @@ function App() {
 
     if (!payload) return null
 
-    const references = payload.source_references || payload.references || brief?.evidence_references || []
+    const references = [payload.source_references, payload.references, brief?.evidence_references].find(Array.isArray) as unknown[] | undefined || []
 
     return (
       <div className="output-card" key={outputType}>
         <div className="output-head">
           <div>
             <p className="eyebrow subtle">OUTPUT</p>
-            <h3>{outputType === 'executive_summary' ? 'Executive Summary' : outputType === 'advisory' ? 'Advisory' : 'LinkedIn'}</h3>
+            <h3>{outputLabels[outputType]}</h3>
           </div>
           <div className="output-actions">
             <button type="button" className="secondary" onClick={() => copyOutput(outputType, edited)}>
@@ -483,20 +564,22 @@ function App() {
             <button type="button" className="secondary" onClick={() => regenerateOutput(outputType)} disabled={isProcessing}>
               {regeneratingOutput === outputType ? 'Regenerating…' : 'Regenerate'}
             </button>
+            {outputType === 'infographic' ? <button type="button" className="secondary" onClick={() => downloadInfographic(edited)}>Download HTML</button> : null}
+            {outputType === 'presentation' ? <button type="button" className="secondary" onClick={() => void downloadPresentation(edited)} disabled={isDownloadingPresentation}>{isDownloadingPresentation ? 'Preparing…' : 'Download .pptx'}</button> : null}
             {copyFeedback?.outputType === outputType && copyFeedback.status === 'failed' ? (
               <span className="copy-feedback error" role="status">Copy unavailable</span>
             ) : null}
             {copyFeedback?.outputType === outputType && copyFeedback.status === 'copied' ? (
               <span className="copy-feedback" role="status">Copied to clipboard</span>
             ) : null}
-            {!isEditing ? (
+            {!isEditing && outputFieldConfig[outputType]?.length ? (
               <button type="button" onClick={() => startEditingOutput(outputType)}>Edit</button>
-            ) : (
+            ) : isEditing ? (
               <>
                 <button type="button" onClick={() => saveEditedOutput(outputType)}>Save</button>
                 <button type="button" className="secondary" onClick={() => cancelEditingOutput(outputType)}>Cancel</button>
               </>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -511,7 +594,9 @@ function App() {
             <div className="editor-grid">
               {outputFieldConfig[outputType]?.map((field) => {
                 const value = edited[field]
-                const fieldValue = Array.isArray(value) ? value.join('\n') : typeof value === 'number' ? String(value) : String(value ?? '')
+                const fieldValue = field === 'sections' && outputType === 'infographic'
+                  ? JSON.stringify(value ?? [], null, 2)
+                  : Array.isArray(value) ? value.join('\n') : typeof value === 'number' ? String(value) : String(value ?? '')
 
                 return (
                   <label key={field} className="editor-field">
@@ -521,7 +606,41 @@ function App() {
                 )
               })}
             </div>
-          ) : (
+          ) : outputType === 'infographic' ? (
+              <div className="infographic-preview">
+                <header className="infographic-header">
+                  <p className="eyebrow subtle">CONTENT BRIEF · VISUAL SUMMARY</p>
+                  <h2>{String(payload.title ?? '')}</h2>
+                  <p>{String(payload.subtitle ?? '')}</p>
+                </header>
+                <div className="infographic-stat"><span>KEY STAT / FINDING</span><strong>{String(payload.key_stat ?? '')}</strong></div>
+                <div className="infographic-sections">
+                  {(Array.isArray(payload.sections) ? payload.sections : []).map((section: OutputRecord, index: number) => (
+                    <article key={`${section.heading}-${index}`}>
+                      <h4>{String(section.heading ?? '')}</h4><strong>{String(section.value ?? '')}</strong><p>{String(section.description ?? '')}</p>
+                    </article>
+                  ))}
+                </div>
+                <div className="infographic-actions"><h4>{String(payload.key_message ?? '')}</h4><ul>{(Array.isArray(payload.recommended_actions) ? payload.recommended_actions : []).map((action, index) => <li key={`${String(action)}-${index}`}>{String(action)}</li>)}</ul></div>
+                <p className="infographic-footer">{String(payload.footer ?? '')}</p>
+              </div>
+            ) : outputType === 'presentation' ? (
+              <div className="slide-preview">
+                <div className="slide-deck-heading"><span>{(Array.isArray(payload.slides) ? payload.slides : []).length} SLIDES</span><h2>{String(payload.title ?? '')}</h2><p>{String(payload.subtitle ?? '')}</p></div>
+                {(Array.isArray(payload.slides) ? payload.slides : []).map((slide: OutputRecord, index: number) => (
+                  <article key={`${String(slide.slide_number)}-${String(slide.title)}`}>
+                    <span>SLIDE {String(slide.slide_number || index + 1)}</span><h4>{String(slide.title ?? '')}</h4>
+                    <ul>{(Array.isArray(slide.content) ? slide.content : []).map((line, lineIndex) => <li key={`${String(line)}-${lineIndex}`}>{String(line)}</li>)}</ul>
+                  </article>
+                ))}
+              </div>
+            ) : outputType === 'x_post' ? (
+              <div className="x-post-preview">
+                <p className="x-post-hook">{String(payload.hook ?? '')}</p><p>{String(payload.post ?? '')}</p>
+                <p>{String(payload.call_to_action ?? '')}</p><strong>{(Array.isArray(payload.hashtags) ? payload.hashtags : []).map(String).join(' ')}</strong>
+                <span>{String(payload.character_count ?? 0)} characters</span>
+              </div>
+            ) : (
             <dl className="output-details">
               {Object.entries(payload).map(([field, value]) => {
                 if (field === 'character_count') {
@@ -535,6 +654,15 @@ function App() {
 
                 if (Array.isArray(value)) {
                   return renderArrayField(field, value)
+                }
+
+                if (typeof value === 'object' && value !== null) {
+                  return (
+                    <div className="data-row multiline" key={field}>
+                      <dt>{outputFieldLabels[field] || field}</dt>
+                      <dd>{JSON.stringify(value, null, 2)}</dd>
+                    </div>
+                  )
                 }
 
                 if (typeof value === 'string' && value.length > 160) {
@@ -597,7 +725,7 @@ function App() {
         <div className="brief-header">
           <div>
             <p className="eyebrow subtle">SOURCE-TO-BRIEF</p>
-            <h3>{brief.main_topic || 'Untitled brief'}</h3>
+            <h3>{String(brief.main_topic || 'Untitled brief')}</h3>
           </div>
           <span className="generation-mode">Generation: {generationMode}</span>
         </div>
@@ -747,14 +875,14 @@ function App() {
 
           <div className="output-toggle-group">
             <span className="field-label">Outputs</span>
-            {(['executive_summary', 'advisory', 'linkedin'] as OutputKey[]).map((outputKey) => (
+            {(Object.keys(outputLabels) as OutputKey[]).map((outputKey) => (
               <label key={outputKey} className="toggle-chip">
                 <input
                   type="checkbox"
                   checked={selectedOutputs.has(outputKey)}
                   onChange={() => toggleOutput(outputKey)}
                 />
-                <span>{outputKey === 'executive_summary' ? 'Executive Summary' : outputKey === 'advisory' ? 'Advisory' : 'LinkedIn'}</span>
+                <span>{outputLabels[outputKey]}</span>
               </label>
             ))}
           </div>
@@ -793,9 +921,9 @@ function App() {
         <div className="panel-header results-header">
           <h2>Results Workspace</h2>
           <div className="tab-list" role="tablist" aria-label="results tabs">
-            {(['source', 'brief', 'executive_summary', 'advisory', 'linkedin'] as const).map((tab) => (
+            {(['source', 'brief', ...Object.keys(outputLabels)] as ResultTab[]).map((tab) => (
               <button key={tab} type="button" className={activeTab === tab ? 'active-tab' : ''} onClick={() => setActiveTab(tab)}>
-                {tab === 'source' ? 'Source' : tab === 'brief' ? 'Content Brief' : tab === 'executive_summary' ? 'Executive Summary' : tab === 'advisory' ? 'Advisory' : 'LinkedIn'}
+                {tab === 'source' ? 'Source' : tab === 'brief' ? 'Content Brief' : outputLabels[tab]}
               </button>
             ))}
           </div>

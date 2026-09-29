@@ -13,6 +13,12 @@ def _required_fields_by_output(output_name: str) -> list[str]:
         return ["title", "severity", "date", "summary", "affected_entities", "situation", "impact", "recommended_actions", "mitigation", "references", "disclaimer"]
     if output_name == "linkedin":
         return ["hook", "post", "call_to_action", "hashtags", "alternative_hooks", "character_count"]
+    if output_name == "x_post":
+        return ["hook", "post", "call_to_action", "hashtags", "character_count"]
+    if output_name == "infographic":
+        return ["title", "subtitle", "key_stat", "sections", "key_message", "recommended_actions", "footer"]
+    if output_name == "presentation":
+        return ["title", "subtitle", "slides"]
     return []
 
 
@@ -29,6 +35,8 @@ _UNCERTAINTY_CUE = re.compile(
 )
 _CONFIRMED_CLAIM_PATTERNS = (
     re.compile(r"\b(?:was|were|has been|have been|is|are)\s+(?:successfully\s+)?(?:stolen|compromised|exfiltrated|exposed|breached)\b"),
+    re.compile(r"\b(?:was|were|has been|have been|is|are)\s+not\s+(?:stolen|compromised|exfiltrated|exposed|breached)\b"),
+    re.compile(r"\bno\s+(?:customer\s+)?(?:data|information|records)\s+(?:was|were|has been|have been)\s+(?:stolen|compromised|exfiltrated|exposed|breached)\b"),
     re.compile(r"\b(?:exfiltration|breach|theft|compromise)\s+(?:was|were|is|are|has|have|has been|have been)?\s*(?:confirmed|verified|established|occurred|detected)\b"),
     re.compile(r"\b(?:confirmed|verified|established)\s+(?:that\s+)?[^.!?;]{0,100}\b(?:exfiltrat\w*|breach|stolen|compromised|exposed)\b"),
 )
@@ -89,6 +97,42 @@ def validate_output(output_name: str, payload: dict, brief: dict) -> ValidationR
             errors.append("LinkedIn post exceeds a realistic length for a single post.")
         deterministic_checks.append("LinkedIn length check performed.")
 
+    if output_name == "x_post":
+        hashtags = payload.get("hashtags", [])
+        assembled = "\n\n".join([
+            str(payload.get("hook", "")),
+            str(payload.get("post", "")),
+            str(payload.get("call_to_action", "")),
+            " ".join(str(tag) for tag in hashtags) if isinstance(hashtags, list) else "",
+        ]).strip()
+        actual_count = len(assembled)
+        if payload.get("character_count") != actual_count:
+            errors.append("X Post character_count does not match the rendered post.")
+        if actual_count > 280:
+            warnings.append("X Post exceeds 280 characters and may be truncated by some clients.")
+        if actual_count < 40:
+            warnings.append("X Post is unusually short for a useful update.")
+        if not hashtags:
+            warnings.append("X Post hashtags are missing.")
+        deterministic_checks.append("X Post character count and length checks performed.")
+
+    if output_name == "infographic":
+        sections = payload.get("sections", [])
+        if not isinstance(sections, list) or any(
+            not isinstance(section, dict) or not all(section.get(field) for field in ("heading", "value", "description"))
+            for section in sections
+        ):
+            errors.append("Infographic sections must include heading, value, and description fields.")
+        deterministic_checks.append("Infographic section schema check performed.")
+
+    if output_name == "presentation":
+        slides = payload.get("slides", [])
+        if not isinstance(slides, list) or not 6 <= len(slides) <= 8:
+            errors.append("Presentation must contain between 6 and 8 slides.")
+        elif any(not isinstance(slide, dict) or not slide.get("title") or not isinstance(slide.get("content"), list) or not slide.get("content") for slide in slides):
+            errors.append("Each presentation slide must include a title and non-empty content list.")
+        deterministic_checks.append("Presentation slide count and content checks performed.")
+
     if brief.get("dates"):
         text_blob = json.dumps(payload, ensure_ascii=False).lower()
         date_hits = [d.lower() for d in brief.get("dates", []) if d.lower() in text_blob]
@@ -107,6 +151,13 @@ def validate_output(output_name: str, payload: dict, brief: dict) -> ValidationR
         if not any(fact.lower() in json.dumps(payload, ensure_ascii=False).lower() for fact in brief["key_facts"][:2]):
             warnings.append("The output may not be preserving the most important source facts.")
         deterministic_checks.append("Key fact preservation check performed.")
+
+    source_numbers = set(re.findall(r"\b\d+(?:\.\d+)?%?\b", " ".join(brief.get("key_facts", []) + [brief.get("summary", "")])) )
+    if source_numbers:
+        output_numbers = set(re.findall(r"\b\d+(?:\.\d+)?%?\b", json.dumps(payload, ensure_ascii=False)))
+        if not source_numbers.intersection(output_numbers):
+            warnings.append("No important source numbers were found in the generated output.")
+        deterministic_checks.append("Important number coverage check performed.")
 
     _check_unconfirmed_claims(payload, brief, errors, warnings)
     _check_duration_consistency(payload, brief, errors, warnings)

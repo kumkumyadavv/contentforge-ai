@@ -11,7 +11,7 @@ class ContentConfig(BaseModel):
     language: str = "English"
     detail_level: str = "moderate"
     communication_objective: str = "inform and guide action"
-    output_types: list[str] = Field(default_factory=lambda: ["executive_summary", "advisory", "linkedin"])
+    output_types: list[str] = Field(default_factory=lambda: ["executive_summary", "advisory", "linkedin", "x_post", "infographic", "presentation"])
 
 
 class SourceRequest(BaseModel):
@@ -26,6 +26,11 @@ class GenerateRequest(BaseModel):
 class RegenerateRequest(BaseModel):
     output_type: str = "executive_summary"
     config: ContentConfig = Field(default_factory=ContentConfig)
+    brief: dict[str, Any]
+
+
+class PresentationExportRequest(BaseModel):
+    output: dict[str, Any]
     brief: dict[str, Any]
 
 class ContentBrief(BaseModel):

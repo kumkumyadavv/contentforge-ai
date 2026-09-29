@@ -1,0 +1,6 @@
+fastapi>=0.115
+google-genai>=1.0
+pypdf>=5
+python-multipart>=0.0.9
+python-pptx>=1.0.2,<2
+uvicorn[standard]>=0.30
