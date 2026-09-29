@@ -204,11 +204,13 @@ def _make_x_post_output(brief: dict[str, Any]) -> dict[str, Any]:
     if action and len(" ".join([*post_items, action])) <= 215:
         post_items.append(action)
     post_text = " ".join(post_items).strip()
+    has_entity = bool(brief.get("entities"))
     topic = (brief.get("entities") or [brief.get("main_topic", "")])[0]
     topic_words = re.findall(r"[A-Za-z0-9]+", topic)
     hashtags = [f"#{word}" for word in topic_words[:2]] or ["#Updates"]
+    hook = f"{topic} update" if has_entity else (topic if len(topic) <= 50 else f"{topic_words[0]} update" if topic_words else "Key update")
     payload = {
-        "hook": f"{topic_words[0]} update" if topic_words else "Key update",
+        "hook": hook,
         "post": post_text,
         "call_to_action": "More verified updates to follow.",
         "hashtags": hashtags,

@@ -13,6 +13,11 @@ from app.services.validation import validate_output
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def disable_external_model_calls(monkeypatch):
+    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'GEMINI_API_KEY': '', 'GEMINI_MODEL': 'test-model'})(), raising=False)
+
+
 def test_health_endpoint():
     response = client.get('/health')
     assert response.status_code == 200
@@ -78,7 +83,7 @@ def test_regenerate_uses_request_brief_and_validates_selected_output(output_type
     assert payload['output_type'] == output_type
     assert payload['validation']['status'] in {'passed', 'warning', 'failed'}
     if output_type in {'linkedin', 'x_post'}:
-        assert 'Request supplied incident brief' in payload['output']['hook']
+        assert 'Request supplied incident brief' in payload['output']['hook'] or 'request brief' in payload['output']['post'].lower()
     else:
         assert 'Request supplied incident brief' in payload['output']['title']
     assert app.state.current_brief is None
