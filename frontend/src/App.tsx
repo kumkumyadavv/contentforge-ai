@@ -3,6 +3,8 @@ import type { ChangeEvent, FormEvent } from 'react'
 import './App.css'
 
 type OutputKey = 'executive_summary' | 'advisory' | 'linkedin'
+type ResultTab = 'source' | 'brief' | OutputKey
+type ProcessingOperation = 'source' | 'generation' | 'regeneration'
 
 type AppConfig = {
   audience: string
@@ -31,7 +33,44 @@ const defaultConfig: AppConfig = {
 }
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const processingSteps = ['Extracting', 'Understanding', 'Generating', 'Validating']
+const processingSteps = ['Extracting source', 'Building Content Brief', 'Generating outputs', 'Validating']
+const outputFieldLabels: Record<string, string> = {
+  title: 'Title',
+  one_line_summary: 'One-line summary',
+  situation: 'Situation',
+  key_findings: 'Key findings',
+  impact: 'Impact',
+  risks: 'Risks',
+  recommended_actions: 'Recommended actions',
+  uncertainties: 'Uncertainties',
+  source_references: 'Source references',
+  severity: 'Severity',
+  date: 'Date',
+  summary: 'Summary',
+  affected_entities: 'Affected entities',
+  mitigation: 'Mitigation',
+  references: 'References',
+  disclaimer: 'Disclaimer',
+  hook: 'Hook',
+  post: 'Post',
+  call_to_action: 'Call to action',
+  hashtags: 'Hashtags',
+  alternative_hooks: 'Alternative hooks',
+  character_count: 'Character count',
+  main_topic: 'Main topic',
+  key_facts: 'Key facts',
+  dates: 'Dates',
+  entities: 'Entities',
+  evidence_references: 'Source references',
+}
+
+const outputFieldConfig: Record<OutputKey, string[]> = {
+  executive_summary: ['title', 'one_line_summary', 'situation', 'key_findings', 'impact', 'risks', 'recommended_actions', 'uncertainties', 'source_references'],
+  advisory: ['title', 'severity', 'date', 'summary', 'affected_entities', 'situation', 'impact', 'recommended_actions', 'mitigation', 'references', 'disclaimer'],
+  linkedin: ['hook', 'post', 'call_to_action', 'hashtags', 'alternative_hooks', 'character_count'],
+}
+
+const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {}))
 
 function App() {
   const [sourceText, setSourceText] = useState('')
@@ -39,11 +78,15 @@ function App() {
   const [config, setConfig] = useState<AppConfig>(defaultConfig)
   const [processingStep, setProcessingStep] = useState(0)
   const [isProcessing, setIsProcessing] = useState(false)
-  const [activeTab, setActiveTab] = useState<'source' | 'summary' | 'advisory' | 'linkedin'>('source')
+  const [processingOperation, setProcessingOperation] = useState<ProcessingOperation | null>(null)
+  const [failedOperation, setFailedOperation] = useState<ProcessingOperation | null>(null)
+  const [activeTab, setActiveTab] = useState<ResultTab>('source')
   const [sourceMeta, setSourceMeta] = useState<Record<string, unknown>>({})
-  const [brief, setBrief] = useState<Record<string, unknown> | null>(null)
+  const [brief, setBrief] = useState<Record<string, any> | null>(null)
   const [outputs, setOutputs] = useState<Record<string, any>>({})
   const [validation, setValidation] = useState<Record<string, ValidationState>>({})
+  const [editing, setEditing] = useState<Record<string, Record<string, any>>>({})
+  const [generationMode, setGenerationMode] = useState('fallback')
   const [error, setError] = useState('')
 
   const selectedOutputs = useMemo(
@@ -64,21 +107,60 @@ function App() {
     })
   }
 
+  const clearGeneratedResults = () => {
+    setBrief(null)
+    setOutputs({})
+    setValidation({})
+    setEditing({})
+    setActiveTab('source')
+  }
+
+  const handleSourceTextChange = (value: string) => {
+    setSourceText(value)
+    setSourceMeta({})
+    setError('')
+    setFailedOperation(null)
+    clearGeneratedResults()
+  }
+
   const handlePdfChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setPdfFile(event.target.files?.[0] ?? null)
+    const nextFile = event.target.files?.[0] ?? null
+    if (nextFile && !nextFile.name.toLowerCase().endsWith('.pdf')) {
+      setError('Only PDF files are supported for upload.')
+      setPdfFile(null)
+      return
+    }
+    setPdfFile(nextFile)
+    setSourceMeta({})
+    setError('')
+    setFailedOperation(null)
+    clearGeneratedResults()
   }
 
   const submitSource = async (event?: FormEvent) => {
     event?.preventDefault()
     setError('')
+    setFailedOperation(null)
+    setProcessingStep(0)
+    setIsProcessing(true)
+    setProcessingOperation('source')
+    clearGeneratedResults()
 
     const formData = new FormData()
     if (pdfFile) {
+      if (!pdfFile.name.toLowerCase().endsWith('.pdf')) {
+        setError('Please upload a valid PDF file.')
+        setIsProcessing(false)
+        setProcessingOperation(null)
+        return
+      }
       formData.append('file', pdfFile)
     } else if (sourceText.trim()) {
       formData.append('text', sourceText)
     } else {
       setError('Paste text or upload a PDF before continuing.')
+      setIsProcessing(false)
+      setProcessingOperation(null)
       return
     }
 
@@ -94,22 +176,41 @@ function App() {
       }
 
       const payload = await response.json()
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('The source endpoint returned a malformed response.')
+      }
+
       setSourceText(payload.text || sourceText)
       setSourceMeta(payload.metadata || {})
       setBrief(null)
       setOutputs({})
       setValidation({})
+      setEditing({})
+      setActiveTab('source')
+      setProcessingStep(1)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Source upload failed.')
+      setFailedOperation('source')
+    } finally {
+      setIsProcessing(false)
+      setProcessingOperation(null)
     }
   }
 
   const runGeneration = async () => {
+    if (!sourceText.trim()) {
+      setError('Paste text or upload a PDF before generating output.')
+      return
+    }
+
     setError('')
+    setFailedOperation(null)
     setIsProcessing(true)
     setProcessingStep(0)
+    setProcessingOperation('generation')
 
     try {
+      setProcessingStep(1)
       const response = await fetch(`${API_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -125,25 +226,38 @@ function App() {
       }
 
       const payload = await response.json()
+      if (!payload || typeof payload !== 'object' || !payload.brief || typeof payload.outputs !== 'object') {
+        throw new Error('The backend returned a malformed generation response.')
+      }
+
+      setProcessingStep(2)
       setBrief(payload.brief || null)
       setOutputs(payload.outputs || {})
       setValidation(payload.validation || {})
+      setGenerationMode(payload.generation_mode || 'fallback')
       setSourceMeta(payload.source_metadata || sourceMeta)
-      setActiveTab('summary')
+      setEditing({})
+      setActiveTab('brief')
+      setProcessingStep(3)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Unexpected generation error.')
+      setFailedOperation('generation')
+      setProcessingStep(0)
     } finally {
       setIsProcessing(false)
-      setProcessingStep(processingSteps.length - 1)
+      setProcessingOperation(null)
     }
   }
 
   const regenerateOutput = async (outputType: OutputKey) => {
     setError('')
+    setFailedOperation(null)
     setIsProcessing(true)
     setProcessingStep(0)
+    setProcessingOperation('regeneration')
 
     try {
+      setProcessingStep(1)
       const response = await fetch(`${API_URL}/api/output/regenerate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -156,14 +270,22 @@ function App() {
       }
 
       const payload = await response.json()
+      if (!payload || typeof payload !== 'object' || !payload.output) {
+        throw new Error('The regeneration endpoint returned an unexpected payload.')
+      }
+
+      setProcessingStep(2)
       setOutputs((current) => ({ ...current, [outputType]: payload.output }))
       setValidation((current) => ({ ...current, [outputType]: payload.validation }))
-      setActiveTab(outputType === 'linkedin' ? 'linkedin' : outputType === 'advisory' ? 'advisory' : 'summary')
+      setActiveTab(outputType)
+      setProcessingStep(3)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Unexpected regeneration error.')
+      setFailedOperation('regeneration')
+      setProcessingStep(0)
     } finally {
       setIsProcessing(false)
-      setProcessingStep(processingSteps.length - 1)
+      setProcessingOperation(null)
     }
   }
 
@@ -175,100 +297,344 @@ function App() {
     }
   }
 
-  const renderOutputCard = (key: OutputKey, payload: Record<string, any>) => {
-    if (!payload) return null
+  const flattenOutput = (payload: Record<string, any>) => {
+    const relevantFields = Object.entries(payload)
+      .filter(([key]) => key !== 'character_count')
+      .map(([key, value]) => {
+        if (Array.isArray(value)) {
+          return `${outputFieldLabels[key] || key}: ${value.join(' • ')}`
+        }
+        if (typeof value === 'object' && value !== null) {
+          return `${outputFieldLabels[key] || key}: ${JSON.stringify(value)}`
+        }
+        return `${outputFieldLabels[key] || key}: ${String(value)}`
+      })
+      .join('\n')
+
+    return `${relevantFields}${payload.character_count ? `\nCharacter count: ${payload.character_count}` : ''}`
+  }
+
+  const startEditingOutput = (outputType: OutputKey) => {
+    const current = outputs[outputType]
+    if (!current) return
+    setEditing((value) => ({ ...value, [outputType]: cloneValue(current) }))
+  }
+
+  const cancelEditingOutput = (outputType: OutputKey) => {
+    setEditing((value) => {
+      const next = { ...value }
+      delete next[outputType]
+      return next
+    })
+  }
+
+  const updateEditedField = (outputType: OutputKey, field: string, rawValue: string) => {
+    setEditing((current) => ({
+      ...current,
+      [outputType]: {
+        ...current[outputType],
+        [field]: rawValue,
+      },
+    }))
+  }
+
+  const saveEditedOutput = (outputType: OutputKey) => {
+    const edited = editing[outputType]
+    if (!edited) return
+
+    const base = outputs[outputType] || {}
+    const nextValue = { ...base }
+
+    for (const field of outputFieldConfig[outputType] ?? []) {
+      const editedFieldValue = edited[field]
+      if (Array.isArray(base[field])) {
+        nextValue[field] = typeof editedFieldValue === 'string'
+          ? editedFieldValue
+              .split(/\n|•/)
+              .map((item) => item.trim())
+              .filter(Boolean)
+          : []
+      } else if (typeof base[field] === 'number') {
+        nextValue[field] = Number(editedFieldValue ?? 0) || 0
+      } else {
+        nextValue[field] = typeof editedFieldValue === 'string' ? editedFieldValue : base[field]
+      }
+    }
+
+    setOutputs((current) => ({ ...current, [outputType]: nextValue }))
+    cancelEditingOutput(outputType)
+  }
+
+  const renderArrayField = (name: string, values: unknown[]) => (
+    <div className="data-row" key={name}>
+      <dt>{outputFieldLabels[name] || name}</dt>
+      <dd>{Array.isArray(values) ? values.join(' • ') : String(values)}</dd>
+    </div>
+  )
+
+  const renderValidationPanel = (outputType: OutputKey) => {
+    const current = validation[outputType]
+    if (!current) return null
 
     return (
-      <div className="output-container" key={key}>
-        <div className="output-header">
-          <h4>{key.replace('_', ' ')}</h4>
-          <div className="output-actions">
-            <button type="button" onClick={() => copyText(JSON.stringify(payload, null, 2))}>Copy</button>
-            <button type="button" onClick={() => regenerateOutput(key)}>Regenerate</button>
-          </div>
+      <div className={`validation-panel ${current.status}`}>
+        <div className="validation-heading">
+          <span className="validation-status">{current.status.toUpperCase()}</span>
+          <span className="validation-title">Validation</span>
         </div>
 
-        {validation[key] ? (
-          <div className={`validation-badge ${validation[key].status}`}>
-            {validation[key].status.toUpperCase()}
+        {current.warnings.length > 0 ? (
+          <div className="validation-block warning-block">
+            <h4>Warnings</h4>
+            <ul>
+              {current.warnings.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
           </div>
         ) : null}
 
-        <div className="content-block">
-          {key === 'linkedin' ? (
-            <>
-              <p><strong>Hook:</strong> {payload.hook}</p>
-              <p><strong>Post:</strong> {payload.post}</p>
-              <p><strong>Call to action:</strong> {payload.call_to_action}</p>
-              <p><strong>Hashtags:</strong> {(payload.hashtags || []).join(' ')}</p>
-              <p><strong>Character count:</strong> {payload.character_count}</p>
-            </>
-          ) : (
-            <>
-              <p><strong>Title:</strong> {payload.title}</p>
-              <p><strong>Summary:</strong> {payload.summary || payload.one_line_summary}</p>
-              <p><strong>Situation:</strong> {payload.situation}</p>
-              <p><strong>Key findings:</strong> {(payload.key_findings || payload.impact || []).join(' • ')}</p>
-              <p><strong>Recommended actions:</strong> {(payload.recommended_actions || []).join(' • ')}</p>
-            </>
-          )}
-        </div>
-
-        {validation[key] && (
-          <div className="validation-details">
-            {validation[key].warnings.length > 0 ? (
-              <div>
-                <strong>Warnings</strong>
-                <ul>{validation[key].warnings.map((item) => <li key={item}>{item}</li>)}</ul>
-              </div>
-            ) : null}
-            {validation[key].errors.length > 0 ? (
-              <div>
-                <strong>Errors</strong>
-                <ul>{validation[key].errors.map((item) => <li key={item}>{item}</li>)}</ul>
-              </div>
-            ) : null}
+        {current.errors.length > 0 ? (
+          <div className="validation-block error-block">
+            <h4>Errors</h4>
+            <ul>
+              {current.errors.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
           </div>
-        )}
+        ) : null}
+
+        {current.deterministic_checks?.length ? (
+          <div className="validation-block info-block">
+            <h4>Automated checks</h4>
+            <ul>
+              {current.deterministic_checks.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </div>
     )
   }
 
-  const renderTabContent = () => {
-    if (activeTab === 'source') {
-      return (
-        <div className="tab-panel">
-          <h3>Source preview</h3>
-          <pre>{sourceText || 'No source loaded yet.'}</pre>
-          {brief ? (
-            <div className="brief-card">
-              <h4>Content brief</h4>
-              <p><strong>Main topic:</strong> {String(brief.main_topic || '')}</p>
-              <p><strong>Summary:</strong> {String(brief.summary || '')}</p>
-              <p><strong>Key facts:</strong> {(brief.key_facts as string[] | undefined)?.join(' • ') || 'None'}</p>
-            </div>
-          ) : null}
+  const renderOutputCard = (outputType: OutputKey) => {
+    const payload = outputs[outputType]
+    const currentValidation = validation[outputType]
+    const isEditing = Boolean(editing[outputType])
+    const edited = editing[outputType] || payload || {}
+
+    if (!payload) return null
+
+    const references = payload.source_references || payload.references || brief?.evidence_references || []
+
+    return (
+      <div className="output-card" key={outputType}>
+        <div className="output-head">
+          <div>
+            <p className="eyebrow subtle">OUTPUT</p>
+            <h3>{outputType === 'executive_summary' ? 'Executive Summary' : outputType === 'advisory' ? 'Advisory' : 'LinkedIn'}</h3>
+          </div>
+          <div className="output-actions">
+            <button type="button" className="secondary" onClick={() => copyText(flattenOutput(payload))}>Copy</button>
+            <button type="button" className="secondary" onClick={() => regenerateOutput(outputType)}>Regenerate</button>
+            {!isEditing ? (
+              <button type="button" onClick={() => startEditingOutput(outputType)}>Edit</button>
+            ) : (
+              <>
+                <button type="button" onClick={() => saveEditedOutput(outputType)}>Save</button>
+                <button type="button" className="secondary" onClick={() => cancelEditingOutput(outputType)}>Cancel</button>
+              </>
+            )}
+          </div>
         </div>
-      )
-    }
 
-    if (activeTab === 'summary') {
-      return <div className="tab-panel">{outputs.executive_summary ? renderOutputCard('executive_summary', outputs.executive_summary) : <p>No summary available yet.</p>}</div>
-    }
+        {currentValidation ? (
+          <div className={`validation-badge ${currentValidation.status}`}>
+            {currentValidation.status.toUpperCase()}
+          </div>
+        ) : null}
 
-    if (activeTab === 'advisory') {
-      return <div className="tab-panel">{outputs.advisory ? renderOutputCard('advisory', outputs.advisory) : <p>No advisory available yet.</p>}</div>
-    }
+        <div className="editor-block">
+          {isEditing ? (
+            <div className="editor-grid">
+              {outputFieldConfig[outputType]?.map((field) => {
+                const value = edited[field]
+                const fieldValue = Array.isArray(value) ? value.join('\n') : typeof value === 'number' ? String(value) : String(value ?? '')
 
-    return <div className="tab-panel">{outputs.linkedin ? renderOutputCard('linkedin', outputs.linkedin) : <p>No LinkedIn post available yet.</p>}</div>
+                return (
+                  <label key={field} className="editor-field">
+                    <span>{outputFieldLabels[field] || field}</span>
+                    <textarea value={fieldValue} onChange={(event) => updateEditedField(outputType, field, event.target.value)} rows={field === 'post' || field === 'situation' ? 6 : 3} />
+                  </label>
+                )
+              })}
+            </div>
+          ) : (
+            <dl className="output-details">
+              {Object.entries(payload).map(([field, value]) => {
+                if (field === 'character_count') {
+                  return (
+                    <div className="data-row" key={field}>
+                      <dt>{outputFieldLabels[field] || field}</dt>
+                      <dd>{String(value)}</dd>
+                    </div>
+                  )
+                }
+
+                if (Array.isArray(value)) {
+                  return renderArrayField(field, value)
+                }
+
+                if (typeof value === 'string' && value.length > 160) {
+                  return (
+                    <div className="data-row multiline" key={field}>
+                      <dt>{outputFieldLabels[field] || field}</dt>
+                      <dd>{value}</dd>
+                    </div>
+                  )
+                }
+
+                return (
+                  <div className="data-row" key={field}>
+                    <dt>{outputFieldLabels[field] || field}</dt>
+                    <dd>{String(value ?? '')}</dd>
+                  </div>
+                )
+              })}
+            </dl>
+          )}
+        </div>
+
+        {references.length > 0 ? (
+          <div className="reference-block">
+            <h4>Source references</h4>
+            <ul>
+              {references.map((item: unknown) => (
+                <li key={String(item)}>{String(item)}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        <div className="edit-note">Edits affect only this output and do not change the generated Content Brief unless you regenerate it.</div>
+        {renderValidationPanel(outputType)}
+      </div>
+    )
   }
+
+  const renderBriefTab = () => {
+    if (!brief) {
+      return <div className="empty-state">Generate a brief to view the structured source analysis.</div>
+    }
+
+    const briefFields = [
+      ['main_topic', brief.main_topic],
+      ['summary', brief.summary],
+      ['key_facts', brief.key_facts],
+      ['dates', brief.dates],
+      ['entities', brief.entities],
+      ['impact', brief.impact],
+      ['risks', brief.risks],
+      ['recommended_actions', brief.recommended_actions],
+      ['uncertainties', brief.uncertainties],
+      ['evidence_references', brief.evidence_references],
+    ] as const
+
+    return (
+      <div className="tab-panel brief-tab">
+        <div className="brief-header">
+          <div>
+            <p className="eyebrow subtle">SOURCE-TO-BRIEF</p>
+            <h3>{brief.main_topic || 'Untitled brief'}</h3>
+          </div>
+          <span className="generation-mode">Generation: {generationMode}</span>
+        </div>
+
+        <div className="brief-grid">
+          {briefFields.map(([field, value]) => (
+            <div key={field} className="brief-item">
+              <h4>{outputFieldLabels[field] || field}</h4>
+              {Array.isArray(value) ? (
+                <ul>
+                  {value.map((item) => (
+                    <li key={String(item)}>{String(item)}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p>{String(value ?? '')}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  const renderSourceTab = () => (
+    <div className="tab-panel source-tab">
+      <div className="source-overview">
+        <div>
+          <h3>Source text</h3>
+          <pre>{sourceText || 'No source loaded yet.'}</pre>
+        </div>
+        <div className="source-meta-box">
+          <h4>Source metadata</h4>
+          <ul>
+            <li><strong>Type:</strong> {String(sourceMeta.source_type || 'Not available')}</li>
+            <li><strong>File:</strong> {String(sourceMeta.file_name || 'Pasted text')}</li>
+            <li><strong>Pages:</strong> {String(sourceMeta.page_count || 'N/A')}</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  )
+
+  const renderTabContent = () => {
+    if (activeTab === 'source') return renderSourceTab()
+    if (activeTab === 'brief') return renderBriefTab()
+    return <div className="tab-panel">{renderOutputCard(activeTab)}</div>
+  }
+
+  const outputCount = Object.keys(outputs).length
+  const selectedPdfNeedsExtraction = Boolean(pdfFile && sourceMeta.file_name !== pdfFile.name)
+  const liveSourceStatus = processingOperation === 'source'
+    ? 'Extracting source…'
+    : processingOperation === 'generation'
+      ? 'Processing source…'
+      : failedOperation === 'source'
+        ? 'Extraction failed'
+        : selectedPdfNeedsExtraction
+          ? 'PDF selected'
+          : sourceText.trim()
+            ? 'Ready'
+            : 'Waiting for source'
+  const liveBriefStatus = processingOperation === 'generation'
+    ? 'Preparing Content Brief…'
+    : failedOperation === 'generation'
+      ? 'Generation failed'
+      : brief
+        ? 'Prepared'
+        : 'Not prepared'
+  const liveOutputsStatus = processingOperation === 'generation'
+    ? 'Generating outputs…'
+    : processingOperation === 'regeneration'
+      ? `Regenerating output (${outputCount} generated)`
+      : failedOperation === 'generation'
+        ? outputCount > 0
+          ? `Generation failed (${outputCount} previous outputs retained)`
+          : 'Generation failed'
+        : failedOperation === 'regeneration'
+          ? `Regeneration failed (${outputCount} outputs retained)`
+          : `${outputCount} generated`
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div>
           <p className="eyebrow">CONTENTFORGE AI</p>
-          <h1>Convert one source into coordinated communication outputs</h1>
+          <h1>ContentForge Results Workspace</h1>
         </div>
       </header>
 
@@ -279,20 +645,21 @@ function App() {
           </div>
 
           <form onSubmit={submitSource} className="source-form">
-            <label className="field-label">Paste text</label>
+            <label className="field-label">Paste source text</label>
             <textarea
               value={sourceText}
-              onChange={(event) => setSourceText(event.target.value)}
-              placeholder="Paste a source document, announcement, or briefing note here..."
+              onChange={(event) => handleSourceTextChange(event.target.value)}
+              placeholder="Paste a document excerpt, announcement, briefing note, or customer update..."
               rows={10}
+              disabled={isProcessing}
             />
 
-            <label className="field-label">PDF upload</label>
-            <input type="file" accept="application/pdf" onChange={handlePdfChange} />
+            <label className="field-label">Upload PDF</label>
+            <input type="file" accept="application/pdf" onChange={handlePdfChange} disabled={isProcessing} />
 
             <div className="primary-actions">
-              <button type="submit">Extract source</button>
-              <button type="button" className="secondary" onClick={() => setSourceText('')}>Clear</button>
+              <button type="submit" disabled={isProcessing}>Extract source</button>
+              <button type="button" className="secondary" onClick={() => handleSourceTextChange('')} disabled={isProcessing}>Clear</button>
             </div>
           </form>
 
@@ -337,12 +704,12 @@ function App() {
                   checked={selectedOutputs.has(outputKey)}
                   onChange={() => toggleOutput(outputKey)}
                 />
-                <span>{outputKey.replace('_', ' ')}</span>
+                <span>{outputKey === 'executive_summary' ? 'Executive Summary' : outputKey === 'advisory' ? 'Advisory' : 'LinkedIn'}</span>
               </label>
             ))}
           </div>
 
-          <button type="button" className="generate-button" onClick={runGeneration} disabled={isProcessing || !sourceText.trim()}>
+          <button type="button" className="generate-button" onClick={runGeneration} disabled={isProcessing || !sourceText.trim() || selectedPdfNeedsExtraction}>
             {isProcessing ? 'Processing…' : 'Generate'}
           </button>
 
@@ -354,7 +721,7 @@ function App() {
             <h2>Processing</h2>
           </div>
 
-          <div className="progress-steps">
+          <div className="progress-steps" aria-live="polite">
             {processingSteps.map((step, index) => (
               <div key={step} className={`step ${index <= processingStep ? 'active' : ''}`}>
                 <span>{index + 1}</span>
@@ -364,21 +731,21 @@ function App() {
           </div>
 
           <div className="meta-box">
-            <h3>Source metadata</h3>
-            <p>{sourceMeta.source_type ? `Type: ${String(sourceMeta.source_type)}` : 'No source uploaded yet.'}</p>
-            <p>{sourceMeta.file_name ? `File: ${String(sourceMeta.file_name)}` : 'Text source ready.'}</p>
-            <p>{sourceMeta.page_count ? `Pages: ${String(sourceMeta.page_count)}` : 'No page count available.'}</p>
+            <h3>Live status</h3>
+            <p><strong>Source:</strong> {liveSourceStatus}</p>
+            <p><strong>Brief:</strong> {liveBriefStatus}</p>
+            <p><strong>Outputs:</strong> {liveOutputsStatus}</p>
           </div>
         </section>
       </main>
 
       <section className="results-panel panel">
         <div className="panel-header results-header">
-          <h2>Results</h2>
-          <div className="tab-list" role="tablist">
-            {(['source', 'summary', 'advisory', 'linkedin'] as const).map((tab) => (
+          <h2>Results Workspace</h2>
+          <div className="tab-list" role="tablist" aria-label="results tabs">
+            {(['source', 'brief', 'executive_summary', 'advisory', 'linkedin'] as const).map((tab) => (
               <button key={tab} type="button" className={activeTab === tab ? 'active-tab' : ''} onClick={() => setActiveTab(tab)}>
-                {tab === 'source' ? 'Source' : tab === 'summary' ? 'Summary' : tab === 'advisory' ? 'Advisory' : 'LinkedIn'}
+                {tab === 'source' ? 'Source' : tab === 'brief' ? 'Content Brief' : tab === 'executive_summary' ? 'Executive Summary' : tab === 'advisory' ? 'Advisory' : 'LinkedIn'}
               </button>
             ))}
           </div>
