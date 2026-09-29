@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services import brief as brief_module
+from app.services.validation import validate_output
 
 client = TestClient(app)
 
@@ -39,6 +41,7 @@ def test_generate_returns_brief_and_outputs():
     assert 'main_topic' in payload['brief']
     assert set(payload['outputs']) >= {'executive_summary', 'advisory', 'linkedin'}
     assert set(payload['validation']) >= {'executive_summary', 'advisory', 'linkedin'}
+    assert payload['generation_mode'] in {'llm', 'fallback'}
 
 
 def test_brief_schema_has_expected_fields():
@@ -79,3 +82,60 @@ def test_deteministic_consistency_checks_are_returned():
     validation = response.json()['validation']['executive_summary']
     assert 'deterministic_checks' in validation
     assert len(validation['deterministic_checks']) > 0
+
+
+def test_llm_generation_with_mocked_api_response(monkeypatch):
+    class FakeMessage:
+        content = '{"main_topic": "Acme Ltd", "summary": "Acme Ltd reported 12% revenue growth in Q1 2026.", "key_facts": ["12% revenue growth in Q1 2026", "Expansion of product team"], "dates": ["Q1 2026"], "entities": ["Acme Ltd", "Q1 2026"], "impact": ["Potential operational scale-up"], "risks": ["Shipping delays may affect launch timing"], "recommended_actions": ["Prepare contingency for shipping"], "uncertainties": ["Shipping delays have not been confirmed."], "evidence_references": ["Acme source text"]}'
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return type('Response', (), {'choices': [type('Choice', (), {'message': FakeMessage()})()]})()
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.chat = type('Chat', (), {'completions': FakeCompletions()})()
+
+    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'OPENAI_API_KEY': 'test-key', 'OPENAI_MODEL': 'gpt-4o-mini'})(), raising=False)
+    monkeypatch.setattr('app.services.llm_client.OpenAI', FakeClient)
+
+    brief = brief_module.build_content_brief('Acme Ltd reported 12% revenue growth in Q1 2026. Shipping delays may affect launch timing.', {'audience': 'leadership'})
+    assert brief['main_topic'] == 'Acme Ltd'
+    assert '12% revenue growth' in brief['key_facts'][0]
+    assert 'Shipping delays have not been confirmed.' in ' '.join(brief['uncertainties'])
+
+
+def test_fallback_behavior_without_api_key(monkeypatch):
+    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'OPENAI_API_KEY': '', 'OPENAI_MODEL': 'gpt-4o-mini'})(), raising=False)
+    brief = brief_module.build_content_brief('Operations were disrupted for 6 hours. Customer data exfiltration has not been confirmed.', {'audience': 'security team'})
+    assert isinstance(brief, dict)
+    assert 'Operations were disrupted for 6 hours.' in ' '.join(brief['key_facts']) or 'Operations were disrupted for 6 hours.' in brief['summary']
+
+
+def test_uncertainty_and_fact_preservation_validation():
+    brief = {
+        'main_topic': 'Incident response',
+        'summary': 'Operations were disrupted for 6 hours.',
+        'key_facts': ['Operations were disrupted for 6 hours.', 'Customer data exfiltration has not been confirmed.'],
+        'dates': ['2026-01-15'],
+        'entities': ['Operations'],
+        'impact': ['Operations were disrupted for 6 hours.'],
+        'risks': ['Customer data exfiltration has not been confirmed.'],
+        'recommended_actions': ['Validate the incident before making claims.'],
+        'uncertainties': ['Customer data exfiltration has not been confirmed.'],
+        'evidence_references': ['Source text'],
+    }
+    payload = {
+        'title': 'Incident response',
+        'one_line_summary': 'Operations were disrupted for 6 hours.',
+        'situation': 'Operations were disrupted for 6 days.',
+        'key_findings': ['Operations were disrupted for 6 days.'],
+        'impact': ['Operations were disrupted for 6 days.'],
+        'risks': ['Customer data was stolen.'],
+        'recommended_actions': ['Notify stakeholders immediately.'],
+        'uncertainties': ['Customer data exfiltration has not been confirmed.'],
+        'source_references': ['Source text'],
+    }
+    validation = validate_output('executive_summary', payload, brief)
+    assert validation.status == 'failed'
+    assert any('unconfirmed' in item.lower() or 'mismatch' in item.lower() for item in validation.errors)
