@@ -35,9 +35,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.state.current_source: dict[str, Any] | None = None
-app.state.current_brief: ContentBrief | None = None
-app.state.outputs: dict[str, Any] = {}
+app.state.current_source = None
+app.state.current_brief = None
+app.state.outputs = {}
 
 
 @app.get("/health", response_model=HealthResponse)
