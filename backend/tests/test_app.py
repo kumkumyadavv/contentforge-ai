@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -38,10 +39,72 @@ def test_generate_returns_brief_and_outputs():
     )
     assert response.status_code == 200
     payload = response.json()
+    assert set(payload) == {'brief', 'outputs', 'validation', 'source_metadata', 'generation_mode'}
     assert 'main_topic' in payload['brief']
     assert set(payload['outputs']) >= {'executive_summary', 'advisory', 'linkedin'}
     assert set(payload['validation']) >= {'executive_summary', 'advisory', 'linkedin'}
     assert payload['generation_mode'] in {'llm', 'fallback'}
+
+
+@pytest.mark.parametrize('output_type', ['executive_summary', 'advisory', 'linkedin'])
+def test_regenerate_uses_request_brief_and_validates_selected_output(output_type):
+    app.state.current_brief = None
+    brief = {
+        'main_topic': 'Request supplied incident brief',
+        'summary': 'The request brief is the source of truth.',
+        'key_facts': ['The request brief is the source of truth.'],
+        'dates': [],
+        'entities': [],
+        'impact': [],
+        'risks': [],
+        'recommended_actions': ['Review the request-supplied facts.'],
+        'uncertainties': [],
+        'evidence_references': ['Request brief reference.'],
+    }
+
+    response = client.post(
+        '/api/output/regenerate',
+        json={'output_type': output_type, 'config': {}, 'brief': brief},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {'output_type', 'output', 'validation'}
+    assert payload['output_type'] == output_type
+    assert payload['validation']['status'] in {'passed', 'warning', 'failed'}
+    if output_type == 'linkedin':
+        assert 'Request supplied incident brief' in payload['output']['hook']
+    else:
+        assert 'Request supplied incident brief' in payload['output']['title']
+    assert app.state.current_brief is None
+
+
+def test_regenerate_normalizes_output_type_before_validation():
+    response = client.post(
+        '/api/output/regenerate',
+        json={
+            'output_type': 'EXECUTIVE_SUMMARY',
+            'config': {},
+            'brief': {'main_topic': 'Uppercase output type'},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()['output_type'] == 'executive_summary'
+
+
+def test_regenerate_rejects_unsupported_output_type():
+    response = client.post(
+        '/api/output/regenerate',
+        json={
+            'output_type': 'blog',
+            'config': {},
+            'brief': {'main_topic': 'Request brief'},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'Unsupported output type for regeneration.'
 
 
 def test_brief_schema_has_expected_fields():
@@ -85,19 +148,17 @@ def test_deteministic_consistency_checks_are_returned():
 
 
 def test_llm_generation_with_mocked_api_response(monkeypatch):
-    class FakeMessage:
-        content = '{"main_topic": "Acme Ltd", "summary": "Acme Ltd reported 12% revenue growth in Q1 2026.", "key_facts": ["12% revenue growth in Q1 2026", "Expansion of product team"], "dates": ["Q1 2026"], "entities": ["Acme Ltd", "Q1 2026"], "impact": ["Potential operational scale-up"], "risks": ["Shipping delays may affect launch timing"], "recommended_actions": ["Prepare contingency for shipping"], "uncertainties": ["Shipping delays have not been confirmed."], "evidence_references": ["Acme source text"]}'
-
-    class FakeCompletions:
-        def create(self, **kwargs):
-            return type('Response', (), {'choices': [type('Choice', (), {'message': FakeMessage()})()]})()
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            content = '{"main_topic": "Acme Ltd", "summary": "Acme Ltd reported 12% revenue growth in Q1 2026.", "key_facts": ["12% revenue growth in Q1 2026", "Expansion of product team"], "dates": ["Q1 2026"], "entities": ["Acme Ltd", "Q1 2026"], "impact": ["Potential operational scale-up"], "risks": ["Shipping delays may affect launch timing"], "recommended_actions": ["Prepare contingency for shipping"], "uncertainties": ["Shipping delays have not been confirmed."], "evidence_references": ["Acme source text"]}'
+            return type('Response', (), {'text': content})()
 
     class FakeClient:
         def __init__(self, api_key):
-            self.chat = type('Chat', (), {'completions': FakeCompletions()})()
+            self.models = FakeModels()
 
-    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'OPENAI_API_KEY': 'test-key', 'OPENAI_MODEL': 'gpt-4o-mini'})(), raising=False)
-    monkeypatch.setattr('app.services.llm_client.OpenAI', FakeClient)
+    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'GEMINI_API_KEY': 'test-key', 'GEMINI_MODEL': 'test-model'})(), raising=False)
+    monkeypatch.setattr('app.services.llm_client.genai.Client', FakeClient)
 
     brief = brief_module.build_content_brief('Acme Ltd reported 12% revenue growth in Q1 2026. Shipping delays may affect launch timing.', {'audience': 'leadership'})
     assert brief['main_topic'] == 'Acme Ltd'
@@ -106,7 +167,7 @@ def test_llm_generation_with_mocked_api_response(monkeypatch):
 
 
 def test_fallback_behavior_without_api_key(monkeypatch):
-    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'OPENAI_API_KEY': '', 'OPENAI_MODEL': 'gpt-4o-mini'})(), raising=False)
+    monkeypatch.setattr('app.services.llm_client.settings', type('Settings', (), {'GEMINI_API_KEY': '', 'GEMINI_MODEL': 'test-model'})(), raising=False)
     brief = brief_module.build_content_brief('Operations were disrupted for 6 hours. Customer data exfiltration has not been confirmed.', {'audience': 'security team'})
     assert isinstance(brief, dict)
     assert 'Operations were disrupted for 6 hours.' in ' '.join(brief['key_facts']) or 'Operations were disrupted for 6 hours.' in brief['summary']
@@ -139,3 +200,38 @@ def test_uncertainty_and_fact_preservation_validation():
     validation = validate_output('executive_summary', payload, brief)
     assert validation.status == 'failed'
     assert any('unconfirmed' in item.lower() or 'mismatch' in item.lower() for item in validation.errors)
+
+
+def test_ransomware_uncertainty_is_preserved_in_all_generated_outputs():
+    brief = {
+        'main_topic': 'Ransomware incident',
+        'summary': 'Ransomware affected three servers. There is no confirmed evidence that customer payment information was exfiltrated; the investigation is ongoing.',
+        'key_facts': ['Ransomware affected three servers.'],
+        'dates': [],
+        'entities': [],
+        'impact': ['Three servers were affected.'],
+        'risks': ['Customer payment information exfiltration is unconfirmed.'],
+        'recommended_actions': ['Continue the investigation.'],
+        'uncertainties': ['Customer payment information exfiltration is unconfirmed.'],
+        'evidence_references': ['Ransomware incident source.'],
+    }
+    outputs = brief_module.generate_output_variants(brief, {})
+
+    for output_type, payload in outputs.items():
+        validation = validate_output(output_type, payload, brief)
+        assert validation.status != 'failed', (output_type, validation.errors)
+
+    confirmed_claim = {
+        'title': 'Ransomware incident',
+        'one_line_summary': 'Customer payment information was exfiltrated.',
+        'situation': 'Customer payment information was exfiltrated.',
+        'key_findings': ['Customer payment information was exfiltrated.'],
+        'impact': ['Customer payment information was exfiltrated.'],
+        'risks': ['Customer payment information was exfiltrated.'],
+        'recommended_actions': ['Continue the investigation.'],
+        'uncertainties': ['Customer payment information exfiltration is unconfirmed.'],
+        'source_references': ['Ransomware incident source.'],
+    }
+    validation = validate_output('executive_summary', confirmed_claim, brief)
+    assert validation.status == 'failed'
+    assert any('unconfirmed issue' in item.lower() for item in validation.errors)

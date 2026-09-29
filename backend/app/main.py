@@ -99,22 +99,42 @@ async def generate_content(request: GenerateRequest) -> GenerateResponse:
 
 @app.post("/api/output/regenerate")
 async def regenerate_output(request: RegenerateRequest) -> dict[str, Any]:
-    if app.state.current_brief is None:
-        raise HTTPException(status_code=400, detail="No generated brief is available for regeneration.")
-
     output_type = request.output_type.lower()
+
     if output_type not in {"executive_summary", "advisory", "linkedin"}:
-        raise HTTPException(status_code=400, detail="Unsupported output type for regeneration.")
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported output type for regeneration."
+        )
 
-    outputs = generate_output_variants(app.state.current_brief, request.config.model_dump())
+    brief = request.brief
+
+    outputs = generate_output_variants(
+        brief,
+        request.config.model_dump()
+    )
+
     regenerated = outputs.get(output_type)
+
     if regenerated is None:
-        raise HTTPException(status_code=400, detail="Unable to regenerate output for the selected type.")
+        raise HTTPException(
+            status_code=400,
+            detail="Unable to regenerate output for the selected type."
+        )
 
-    validation = validate_output(output_type, regenerated, app.state.current_brief)
+    validation = validate_output(
+        output_type,
+        regenerated,
+        brief
+    )
+
     app.state.outputs[output_type] = regenerated
-    return {"output_type": output_type, "output": regenerated, "validation": validation}
 
+    return {
+        "output_type": output_type,
+        "output": regenerated,
+        "validation": validation
+    }
 
 @app.get("/api/status")
 def get_status() -> dict[str, Any]:

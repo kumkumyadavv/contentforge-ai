@@ -21,22 +21,36 @@ def _extract_value_units(text: str) -> list[tuple[str, str]]:
     return [(number, unit) for number, unit in matches]
 
 
+_UNCERTAINTY_CUE = re.compile(
+    r"\b(?:no\s+(?:confirmed\s+)?evidence|unconfirmed|not\s+(?:yet\s+)?confirmed|"
+    r"cannot\s+(?:be\s+)?confirm(?:ed)?|has\s+not\s+been\s+confirmed|"
+    r"investigation\s+(?:is|remains)\s+ongoing|ongoing\s+investigation|"
+    r"unknown|not\s+established|not\s+verified)\b"
+)
+_CONFIRMED_CLAIM_PATTERNS = (
+    re.compile(r"\b(?:was|were|has been|have been|is|are)\s+(?:successfully\s+)?(?:stolen|compromised|exfiltrated|exposed|breached)\b"),
+    re.compile(r"\b(?:exfiltration|breach|theft|compromise)\s+(?:was|were|is|are|has|have|has been|have been)?\s*(?:confirmed|verified|established|occurred|detected)\b"),
+    re.compile(r"\b(?:confirmed|verified|established)\s+(?:that\s+)?[^.!?;]{0,100}\b(?:exfiltrat\w*|breach|stolen|compromised|exposed)\b"),
+)
+
+
 def _check_unconfirmed_claims(payload: dict, brief: dict, errors: list[str], warnings: list[str]) -> None:
-    output_text = json.dumps(payload, ensure_ascii=False).lower()
     source_uncertainty = " ".join(brief.get("uncertainties", []) + brief.get("risks", [])).lower()
-    if any(phrase in source_uncertainty for phrase in ["not confirmed", "not yet confirmed", "unknown", "unconfirmed", "cannot confirm"]):
-        negative_claim_patterns = [
-            "was stolen",
-            "was compromised",
-            "occurred",
-            "happened",
-            "caused",
-            "confirmed",
-            "exfiltration",
-            "breach",
-        ]
-        if any(pattern in output_text for pattern in negative_claim_patterns):
+    if not re.search(
+        r"\b(?:not\s+(?:yet\s+)?confirmed|unknown|unconfirmed|cannot\s+confirm|"
+        r"no\s+confirmed\s+evidence|investigation\s+(?:is|remains)\s+ongoing)\b",
+        source_uncertainty,
+    ):
+        return
+
+    output_text = json.dumps(payload, ensure_ascii=False).lower()
+    clauses = re.split(r"[.!?;,\n]+|\b(?:but|however|although|yet)\b", output_text)
+    for clause in clauses:
+        if _UNCERTAINTY_CUE.search(clause):
+            continue
+        if any(pattern.search(clause) for pattern in _CONFIRMED_CLAIM_PATTERNS):
             errors.append("The output appears to turn an unconfirmed issue into a confirmed fact.")
+            return
 
 
 def _check_duration_consistency(payload: dict, brief: dict, errors: list[str], warnings: list[str]) -> None:

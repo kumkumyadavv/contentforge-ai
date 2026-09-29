@@ -26,7 +26,7 @@ class GenerateRequest(BaseModel):
 class RegenerateRequest(BaseModel):
     output_type: str = "executive_summary"
     config: ContentConfig = Field(default_factory=ContentConfig)
-
+    brief: dict[str, Any]
 
 class ContentBrief(BaseModel):
     model_config = ConfigDict(extra="forbid")

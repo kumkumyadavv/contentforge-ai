@@ -5,6 +5,7 @@ import './App.css'
 type OutputKey = 'executive_summary' | 'advisory' | 'linkedin'
 type ResultTab = 'source' | 'brief' | OutputKey
 type ProcessingOperation = 'source' | 'generation' | 'regeneration'
+type CopyFeedback = { outputType: OutputKey; status: 'copied' | 'failed' } | null
 
 type AppConfig = {
   audience: string
@@ -88,6 +89,8 @@ function App() {
   const [editing, setEditing] = useState<Record<string, Record<string, any>>>({})
   const [generationMode, setGenerationMode] = useState('fallback')
   const [error, setError] = useState('')
+  const [copyFeedback, setCopyFeedback] = useState<CopyFeedback>(null)
+  const [regeneratingOutput, setRegeneratingOutput] = useState<OutputKey | null>(null)
 
   const selectedOutputs = useMemo(
     () => new Set(config.output_types),
@@ -250,51 +253,88 @@ function App() {
   }
 
   const regenerateOutput = async (outputType: OutputKey) => {
-    setError('')
-    setFailedOperation(null)
-    setIsProcessing(true)
-    setProcessingStep(0)
-    setProcessingOperation('regeneration')
-
-    try {
-      setProcessingStep(1)
-      const response = await fetch(`${API_URL}/api/output/regenerate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ output_type: outputType, config }),
-      })
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}))
-        throw new Error(payload.detail || 'Regeneration failed.')
-      }
-
-      const payload = await response.json()
-      if (!payload || typeof payload !== 'object' || !payload.output) {
-        throw new Error('The regeneration endpoint returned an unexpected payload.')
-      }
-
-      setProcessingStep(2)
-      setOutputs((current) => ({ ...current, [outputType]: payload.output }))
-      setValidation((current) => ({ ...current, [outputType]: payload.validation }))
-      setActiveTab(outputType)
-      setProcessingStep(3)
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unexpected regeneration error.')
-      setFailedOperation('regeneration')
-      setProcessingStep(0)
-    } finally {
-      setIsProcessing(false)
-      setProcessingOperation(null)
-    }
+  if (!brief) {
+    setError('Generate the Content Brief before regenerating an output.')
+    return
   }
 
-  const copyText = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      setError('Clipboard access is not available in this browser context.')
+  setError('')
+  setFailedOperation(null)
+  setIsProcessing(true)
+  setProcessingStep(0)
+  setProcessingOperation('regeneration')
+  setRegeneratingOutput(outputType)
+
+  try {
+    setProcessingStep(1)
+
+    const response = await fetch(`${API_URL}/api/output/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        output_type: outputType,
+        config,
+        brief,
+      }),
+    })
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
+      throw new Error(payload.detail || 'Regeneration failed.')
     }
+
+    const payload = await response.json()
+
+    if (!payload || typeof payload !== 'object' || !payload.output) {
+      throw new Error('The regeneration endpoint returned an unexpected payload.')
+    }
+
+    setProcessingStep(2)
+
+    setOutputs((current) => ({
+      ...current,
+      [outputType]: payload.output,
+    }))
+
+    setValidation((current) => ({
+      ...current,
+      [outputType]: payload.validation,
+    }))
+
+    setEditing((current) => {
+      const next = { ...current }
+      delete next[outputType]
+      return next
+    })
+
+    setActiveTab(outputType)
+    setProcessingStep(3)
+  } catch (caughtError) {
+    setError(
+      caughtError instanceof Error
+        ? caughtError.message
+        : 'Unexpected regeneration error.'
+    )
+    setFailedOperation('regeneration')
+    setProcessingStep(0)
+  } finally {
+    setIsProcessing(false)
+    setProcessingOperation(null)
+    setRegeneratingOutput(null)
+  }
+}
+ 
+ 
+  const copyOutput = async (outputType: OutputKey, payload: Record<string, any>) => {
+    try {
+      await navigator.clipboard.writeText(flattenOutput(payload))
+      setCopyFeedback({ outputType, status: 'copied' })
+    } catch {
+      setCopyFeedback({ outputType, status: 'failed' })
+    }
+    window.setTimeout(() => {
+      setCopyFeedback((current) => current?.outputType === outputType ? null : current)
+    }, 1800)
   }
 
   const flattenOutput = (payload: Record<string, any>) => {
@@ -437,8 +477,18 @@ function App() {
             <h3>{outputType === 'executive_summary' ? 'Executive Summary' : outputType === 'advisory' ? 'Advisory' : 'LinkedIn'}</h3>
           </div>
           <div className="output-actions">
-            <button type="button" className="secondary" onClick={() => copyText(flattenOutput(payload))}>Copy</button>
-            <button type="button" className="secondary" onClick={() => regenerateOutput(outputType)}>Regenerate</button>
+            <button type="button" className="secondary" onClick={() => copyOutput(outputType, edited)}>
+              {copyFeedback?.outputType === outputType && copyFeedback.status === 'copied' ? 'Copied' : 'Copy'}
+            </button>
+            <button type="button" className="secondary" onClick={() => regenerateOutput(outputType)} disabled={isProcessing}>
+              {regeneratingOutput === outputType ? 'Regenerating…' : 'Regenerate'}
+            </button>
+            {copyFeedback?.outputType === outputType && copyFeedback.status === 'failed' ? (
+              <span className="copy-feedback error" role="status">Copy unavailable</span>
+            ) : null}
+            {copyFeedback?.outputType === outputType && copyFeedback.status === 'copied' ? (
+              <span className="copy-feedback" role="status">Copied to clipboard</span>
+            ) : null}
             {!isEditing ? (
               <button type="button" onClick={() => startEditingOutput(outputType)}>Edit</button>
             ) : (
