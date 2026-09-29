@@ -212,7 +212,7 @@ def _make_x_post_output(brief: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "hook": hook,
         "post": post_text,
-        "call_to_action": "More verified updates to follow.",
+        "call_to_action": "Review the source for context.",
         "hashtags": hashtags,
     }
     payload["character_count"] = len(_x_post_text(payload))
@@ -233,6 +233,7 @@ def _make_infographic_output(brief: dict[str, Any]) -> dict[str, Any]:
     dates = brief.get("dates", [])
     entities = brief.get("entities", [])
     numeric_fact = next((fact for fact in facts if re.search(r"\d", fact)), None)
+    numeric_stat = re.search(r"\b\d+(?:\.\d+)?\s*(?:%|hours?|days?|weeks?|months?|years?|people|customers|employees|sites|records|transactions|locations)(?=\W|$)", numeric_fact or "", re.IGNORECASE)
     sections = []
     for heading, values in [
         ("Key findings", facts),
@@ -246,7 +247,7 @@ def _make_infographic_output(brief: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": brief.get("main_topic") or "Content Brief",
         "subtitle": brief.get("summary") or "Evidence-grounded overview",
-        "key_stat": numeric_fact or (dates[0] if dates else "Key findings"),
+        "key_stat": numeric_stat.group().strip() if numeric_stat else (numeric_fact or (dates[0] if dates else "Key findings")),
         "sections": sections,
         "key_message": brief.get("summary") or "Review the evidence and its stated limits.",
         "recommended_actions": brief.get("recommended_actions", [])[:4],

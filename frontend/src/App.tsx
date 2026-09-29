@@ -102,13 +102,14 @@ const downloadBlob = (blob: Blob, filename: string) => {
   URL.revokeObjectURL(url)
 }
 
-const buildInfographicHtml = (output: OutputRecord) => {
+const buildInfographicHtml = (output: OutputRecord, references: unknown[] = []) => {
   const sections = (Array.isArray(output.sections) ? output.sections : []).map((section: Record<string, unknown>) => `
     <article><h2>${escapeHtml(section.heading)}</h2><strong>${escapeHtml(section.value)}</strong><p>${escapeHtml(section.description)}</p></article>`).join('')
   const actions = (Array.isArray(output.recommended_actions) ? output.recommended_actions : []).map((action: unknown) => `<li>${escapeHtml(action)}</li>`).join('')
+  const sources = references.map((reference) => `<li>${escapeHtml(reference)}</li>`).join('')
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(output.title)}</title><style>
     *{box-sizing:border-box}body{margin:0;background:#edf2ee;color:#172c2a;font:16px/1.55 Georgia,serif}.sheet{max-width:1000px;margin:32px auto;padding:48px;background:#fff;border-top:9px solid #196358}.kicker{font:700 12px Arial,sans-serif;letter-spacing:2px;color:#196358}h1{font-size:40px;line-height:1.1;margin:8px 0}header>p{color:#536560;font-size:18px}.stat{margin:28px 0;background:#e8f1ed;padding:24px;border-left:5px solid #196358}.stat strong{font:700 34px Arial,sans-serif;color:#196358}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.grid article{border:1px solid #d8e1dc;padding:18px}.grid h2{font:700 17px Arial,sans-serif;margin:0 0 10px}.grid strong{font-size:20px}.grid p,footer{color:#536560}h3{margin-top:30px}@media(max-width:640px){.sheet{margin:0;padding:24px}.grid{grid-template-columns:1fr}h1{font-size:32px}}@media print{body{background:#fff}.sheet{margin:0;max-width:none}}
-    </style><main class="sheet"><header><span class="kicker">CONTENTFORGE · EVIDENCE BRIEF</span><h1>${escapeHtml(output.title)}</h1><p>${escapeHtml(output.subtitle)}</p></header><section class="stat"><span class="kicker">KEY STAT / FINDING</span><br><strong>${escapeHtml(output.key_stat)}</strong></section><section class="grid">${sections}</section><h3>${escapeHtml(output.key_message)}</h3><ul>${actions}</ul><footer>${escapeHtml(output.footer)}</footer></main></html>`
+    </style><main class="sheet"><header><span class="kicker">CONTENTFORGE · EVIDENCE BRIEF</span><h1>${escapeHtml(output.title)}</h1><p>${escapeHtml(output.subtitle)}</p></header><section class="stat"><span class="kicker">KEY STAT / FINDING</span><br><strong>${escapeHtml(output.key_stat)}</strong></section><section class="grid">${sections}</section><h3>${escapeHtml(output.key_message)}</h3><ul>${actions}</ul><h3>Source references</h3><ul>${sources}</ul><footer>${escapeHtml(output.footer)}</footer></main></html>`
 }
 
 const cloneValue = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {}))
@@ -380,7 +381,8 @@ function App() {
 
   const downloadInfographic = (payload: OutputRecord) => {
     const filename = String(payload.title || 'contentforge-infographic').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-    downloadBlob(new Blob([buildInfographicHtml(payload)], { type: 'text/html;charset=utf-8' }), `${filename || 'contentforge-infographic'}.html`)
+    const references = Array.isArray(brief?.evidence_references) ? brief.evidence_references : []
+    downloadBlob(new Blob([buildInfographicHtml(payload, references)], { type: 'text/html;charset=utf-8' }), `${filename || 'contentforge-infographic'}.html`)
   }
 
   const downloadPresentation = async (payload: OutputRecord) => {

@@ -135,6 +135,7 @@ def test_new_outputs_include_brief_facts_dates_and_valid_x_character_count(monke
     assert x_post['character_count'] == len(composed_post)
     assert '18%' in json.dumps(data['outputs'])
     assert '2026-05-10' in json.dumps(data['outputs'])
+    assert data['outputs']['infographic']['key_stat'] == '18%'
     assert data['validation']['infographic']['status'] != 'failed'
     assert len(data['outputs']['presentation']['slides']) == 8
 
