@@ -178,7 +178,7 @@ pip install -r requirements.txt
 
 ### 3. Configure Environment Variables
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project backend folder:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
